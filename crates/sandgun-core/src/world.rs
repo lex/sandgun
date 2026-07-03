@@ -98,4 +98,99 @@ impl World {
             }
         }
     }
+
+    #[inline]
+    pub(crate) fn frame_u8(&self) -> u8 {
+        (self.frame & 0xFF) as u8
+    }
+
+    /// Swap two cells (either may be Empty), stamp both as moved this frame, wake both chunks.
+    pub(crate) fn swap_cells(&mut self, ax: usize, ay: usize, bx: usize, by: usize) {
+        let (ai, bi) = (self.idx(ax, ay), self.idx(bx, by));
+        self.cells.swap(ai, bi);
+        let f = self.frame_u8();
+        self.stamp[ai] = f;
+        self.stamp[bi] = f;
+        self.wake(ax, ay);
+        self.wake(bx, by);
+    }
+
+    pub fn step(&mut self) {
+        self.frame += 1;
+        std::mem::swap(&mut self.active, &mut self.active_next);
+        self.active_next.iter_mut().for_each(|b| *b = 0);
+        self.cells_processed = 0;
+        let ltr = self.frame % 2 == 0; // alternate sweep direction to avoid horizontal bias
+
+        // Bottom-up: destination rows are processed before their sources.
+        for y in (0..self.height).rev() {
+            for x_raw in 0..self.width {
+                let x = if ltr { x_raw } else { self.width - 1 - x_raw };
+                self.update_cell(x, y);
+            }
+        }
+    }
+
+    fn update_cell(&mut self, x: usize, y: usize) {
+        let i = self.idx(x, y);
+        if self.stamp[i] == self.frame_u8() {
+            return; // already moved this frame
+        }
+        let mat = Material::from_u8(self.cells[i].material);
+        if mat == Material::Empty || mat.is_solid() {
+            return;
+        }
+        self.cells_processed += 1;
+        if mat.is_powder() {
+            self.update_powder(x, y);
+        } else if mat.is_liquid() {
+            self.update_liquid(x, y, mat);
+        }
+    }
+
+    fn update_powder(&mut self, x: usize, y: usize) {
+        let (xi, yi) = (x as isize, y as isize);
+
+        // Try straight down
+        if self.in_bounds(xi, yi + 1) {
+            let below_idx = self.idx(xi as usize, (yi + 1) as usize);
+            let dst = Material::from_u8(self.cells[below_idx].material);
+            if dst == Material::Empty || dst.is_liquid() {
+                self.swap_cells(x, y, xi as usize, (yi + 1) as usize);
+                return;
+            }
+            // Only slide diagonally if:
+            // 1. Blocked by powder (sand) AND
+            // 2. There's also powder above (unstable peak - needs support from above to trigger sliding)
+            if dst.is_powder() {
+                let above_idx = self.idx(xi as usize, (yi - 1) as usize);
+                let above_material = if yi > 0 {
+                    Material::from_u8(self.cells[above_idx].material)
+                } else {
+                    Material::Empty
+                };
+
+                if above_material.is_powder() {
+                    // Unstable configuration - try sliding diagonally
+                    let first_dx = if self.next_rand() & 1 == 0 { -1 } else { 1 };
+                    let candidates = [(xi + first_dx, yi + 1), (xi - first_dx, yi + 1)];
+                    for (nx, ny) in candidates {
+                        if !self.in_bounds(nx, ny) {
+                            continue;
+                        }
+                        let diag_idx = self.idx(nx as usize, ny as usize);
+                        let diag_dst = Material::from_u8(self.cells[diag_idx].material);
+                        if diag_dst == Material::Empty || diag_dst.is_liquid() {
+                            self.swap_cells(x, y, nx as usize, ny as usize);
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn update_liquid(&mut self, _x: usize, _y: usize, _mat: Material) {
+        // Task 3
+    }
 }
