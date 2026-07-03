@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/sandgun-core"]
+members = ["crates/sandgun-core", "crates/sandgun-wasm"]
 resolver = "2"
 
 [profile.release]

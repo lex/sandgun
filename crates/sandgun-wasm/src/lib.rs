@@ -1,0 +1,45 @@
+use sandgun_core::world::World;
+use wasm_bindgen::prelude::*;
+
+#[wasm_bindgen]
+pub struct WasmWorld {
+    inner: World,
+}
+
+#[wasm_bindgen]
+impl WasmWorld {
+    #[wasm_bindgen(constructor)]
+    pub fn new(width: u32, height: u32) -> WasmWorld {
+        WasmWorld { inner: World::new(width as usize, height as usize) }
+    }
+    pub fn step(&mut self) {
+        self.inner.step();
+    }
+    pub fn paint(&mut self, x: i32, y: i32, radius: i32, material: u8) {
+        self.inner.paint(x, y, radius, material);
+    }
+    pub fn render(&mut self) {
+        self.inner.render_rgba();
+    }
+    pub fn rgba_ptr(&self) -> *const u8 {
+        self.inner.rgba_ptr()
+    }
+    pub fn rgba_len(&self) -> usize {
+        self.inner.width * self.inner.height * 4
+    }
+    pub fn active_ptr(&self) -> *const u8 {
+        self.inner.active_ptr()
+    }
+    pub fn active_len(&self) -> usize {
+        self.inner.active_len()
+    }
+    pub fn chunks_x(&self) -> usize {
+        self.inner.chunks_x()
+    }
+    pub fn chunks_y(&self) -> usize {
+        self.inner.chunks_y()
+    }
+    pub fn cells_processed(&self) -> u32 {
+        self.inner.cells_processed as u32
+    }
+}
