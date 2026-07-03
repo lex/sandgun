@@ -117,3 +117,23 @@ fn flammability_zero_param_prevents_ignition() {
     }
     assert_eq!(count(&w, Material::Mycelium), 21, "param at 0 must make mycelium fireproof");
 }
+
+#[test]
+fn fire_lifetime_param_controls_painted_fire() {
+    let mut w = World::new(64, 64);
+    w.params.values[sandgun_core::params::P_FIRE_LIFETIME] = 3.0;
+    w.paint(32, 32, 0, Material::Fire as u8);
+    for _ in 0..10 {
+        w.step();
+    }
+    let any_fire = (0..64).any(|x| (0..64).any(|y| w.get(x, y) == Material::Fire));
+    assert!(!any_fire, "3-tick fire must be out within 10 steps");
+
+    let mut w2 = World::new(64, 64);
+    w2.paint(32, 32, 0, Material::Fire as u8);
+    for _ in 0..10 {
+        w2.step();
+    }
+    let any_fire2 = (0..64).any(|x| (0..64).any(|y| w2.get(x, y) == Material::Fire));
+    assert!(any_fire2, "default 40-tick fire must still burn after 10 steps");
+}

@@ -1,5 +1,5 @@
 use crate::cell::{Cell, Material, FLAG_BURNING};
-use crate::params::{Params, P_ACID_ETCH, P_ACID_ETCH_ROCK, P_FIRE_FLICKER, P_SMOKE_EMIT, P_SMOKE_LIFETIME};
+use crate::params::{Params, P_ACID_ETCH, P_ACID_ETCH_ROCK, P_FIRE_FLICKER, P_FIRE_LIFETIME, P_SMOKE_EMIT, P_SMOKE_LIFETIME};
 
 pub const CHUNK: usize = 64;
 pub const DISPERSION: isize = 4;
@@ -123,7 +123,12 @@ impl World {
                 }
                 let shade = (self.next_rand() & 3) as u8;
                 let i = self.idx(x as usize, y as usize);
-                self.cells[i] = Cell::new(Material::from_u8(material), shade);
+                let mat = Material::from_u8(material);
+                let mut cell = Cell::new(mat, shade);
+                if mat == Material::Fire {
+                    cell.aux = self.params.values[P_FIRE_LIFETIME].clamp(0.0, 255.0) as u8;
+                }
+                self.cells[i] = cell;
                 self.wake(x as usize, y as usize);
             }
         }
@@ -298,7 +303,11 @@ impl World {
                 _ => Material::Empty,
             };
             let shade = (self.next_rand() & 3) as u8;
-            self.cells[i] = Cell::new(product, shade);
+            let mut product_cell = Cell::new(product, shade);
+            if product == Material::Fire {
+                product_cell.aux = self.params.values[P_FIRE_LIFETIME].clamp(0.0, 255.0) as u8;
+            }
+            self.cells[i] = product_cell;
             self.stamp[i] = self.frame_u8();
             self.wake(x, y);
             return;

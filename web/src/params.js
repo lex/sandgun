@@ -7,16 +7,20 @@ const INDEX = {
 };
 
 export async function loadParams(world) {
-  const res = await fetch(`/params.json?t=${Date.now()}`); // bust cache on reload
-  const json = await res.json();
-  let applied = 0;
-  for (const [name, value] of Object.entries(json)) {
-    if (name in INDEX) {
-      world.set_param(INDEX[name], value);
-      applied++;
-    } else {
-      console.warn(`params.json: unknown param "${name}"`);
+  try {
+    const res = await fetch(`/params.json?t=${Date.now()}`); // bust cache on reload
+    const json = await res.json();
+    let applied = 0;
+    for (const [name, value] of Object.entries(json)) {
+      if (name in INDEX) {
+        world.set_param(INDEX[name], value);
+        applied++;
+      } else {
+        console.warn(`params.json: unknown param "${name}"`);
+      }
     }
+    console.log(`params: applied ${applied} values`);
+  } catch (err) {
+    console.warn('params: reload failed, keeping current values', err);
   }
-  console.log(`params: applied ${applied} values`);
 }
