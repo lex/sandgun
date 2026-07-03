@@ -65,3 +65,17 @@ fn generated_world_wakes_and_regenerates_cleanly() {
     worldgen::generate(&mut w, 8); // regen over a dirty world must not carry old cells
     assert!(count(&w, Material::Rock) > 0);
 }
+
+#[test]
+fn generated_world_fully_settles() {
+    let mut w = World::new(256, 192);
+    worldgen::generate(&mut w, 7);
+    for _ in 0..2000 {
+        w.step();
+        if w.cells_processed == 0 {
+            break;
+        }
+    }
+    w.step();
+    assert_eq!(w.cells_processed, 0, "an untouched generated world must fully settle");
+}

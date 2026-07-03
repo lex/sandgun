@@ -83,16 +83,39 @@ fn rock_never_moves() {
 }
 
 #[test]
-fn water_falls_then_spreads_sideways() {
+fn pooled_water_comes_to_rest() {
     let mut w = World::new(64, 64);
-    w.paint(32, 60, 0, Material::Water as u8);
-    w.step(); // falls
-    for _ in 0..3 {
-        w.step(); // reaches floor, disperses
+    // rock basin: floor at y=60 spanning x=20..=30, walls up both sides
+    for x in 20..=30 {
+        w.paint(x, 60, 0, Material::Rock as u8);
     }
-    assert_eq!(w.get(32, 60), Material::Empty);
-    let spread = (0..64).any(|x| x != 32 && w.get(x, 63) == Material::Water);
-    assert!(spread, "water on the floor must move horizontally");
+    for y in 50..60 {
+        w.paint(20, y, 0, Material::Rock as u8);
+        w.paint(30, y, 0, Material::Rock as u8);
+    }
+    w.paint(25, 52, 2, Material::Water as u8); // blob falls in and pools
+    for _ in 0..400 {
+        w.step();
+    }
+    w.step();
+    assert_eq!(w.cells_processed, 0, "a pooled liquid must come to rest");
+    assert_eq!(w.get(25, 59), Material::Water, "and it pooled at the basin floor");
+}
+
+#[test]
+fn water_flows_toward_a_drop_and_off_a_ledge() {
+    let mut w = World::new(64, 64);
+    // rock shelf at y=40 spanning x=10..=20; open air to its right
+    for x in 10..=20 {
+        w.paint(x, 40, 0, Material::Rock as u8);
+    }
+    w.paint(18, 39, 0, Material::Water as u8); // 3 cells from the ledge at x=20
+    for _ in 0..60 {
+        w.step();
+    }
+    assert_eq!(w.get(18, 39), Material::Empty, "water found the drop and left the shelf");
+    let below_shelf = (0..64).any(|x| (41..64).any(|y| w.get(x, y) == Material::Water));
+    assert!(below_shelf, "it fell past the shelf");
 }
 
 #[test]

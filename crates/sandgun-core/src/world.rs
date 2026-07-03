@@ -202,26 +202,34 @@ impl World {
             }
         }
 
-        // Horizontal dispersion: farthest consecutive empty cell within DISPERSION, random side first.
+        // Rest-seeking dispersion: slide only toward an actual drop within DISPERSION —
+        // the FIRST scanned empty cell whose below-neighbor is Empty or a strictly
+        // lighter liquid. No drop in either direction means the liquid RESTS (no swap,
+        // no wake, its chunk sleeps). The world floor and solids are not drops.
         let first_dir: isize = if self.next_rand() & 1 == 0 { 1 } else { -1 };
         for dir in [first_dir, -first_dir] {
-            let mut target: Option<usize> = None;
             let mut nx = xi;
             for _ in 0..DISPERSION {
                 nx += dir;
                 if !self.in_bounds(nx, yi) {
                     break;
                 }
-                let dst = Material::from_u8(self.cells[self.idx(nx as usize, y)].material);
-                if dst == Material::Empty {
-                    target = Some(nx as usize);
-                } else {
+                let scanned = Material::from_u8(self.cells[self.idx(nx as usize, y)].material);
+                if scanned != Material::Empty {
                     break; // anything non-empty blocks the slide
                 }
-            }
-            if let Some(tx) = target {
-                self.swap_cells(x, y, tx, y);
-                return;
+                let is_drop = if self.in_bounds(nx, yi + 1) {
+                    let b = Material::from_u8(
+                        self.cells[self.idx(nx as usize, (yi + 1) as usize)].material,
+                    );
+                    b == Material::Empty || (b.is_liquid() && b.density() < my_density)
+                } else {
+                    false
+                };
+                if is_drop {
+                    self.swap_cells(x, y, nx as usize, y);
+                    return;
+                }
             }
         }
     }
