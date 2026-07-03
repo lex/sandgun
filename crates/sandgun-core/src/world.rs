@@ -356,6 +356,10 @@ impl World {
             if p > 0.0 && self.chance(p) {
                 self.cells[ni].flags |= FLAG_BURNING;
                 self.cells[ni].aux = self.params.fuel(nmat);
+                // Stamp as acted-this-frame so the bottom-up sweep doesn't process this
+                // freshly-lit cell again this tick — otherwise fire chains across a whole
+                // connected region in one frame instead of spreading one cell per frame.
+                self.stamp[ni] = self.frame_u8();
                 self.wake(nx as usize, ny as usize);
             }
         }
@@ -459,6 +463,11 @@ impl World {
                 }
             }
         }
+    }
+
+    /// Number of cells currently flagged as burning (test/debug instrument).
+    pub fn burning_count(&self) -> usize {
+        self.cells.iter().filter(|c| c.flags & FLAG_BURNING != 0).count()
     }
 
     pub fn active_ptr(&self) -> *const u8 {

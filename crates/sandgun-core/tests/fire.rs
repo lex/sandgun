@@ -137,3 +137,21 @@ fn fire_lifetime_param_controls_painted_fire() {
     let any_fire2 = (0..64).any(|x| (0..64).any(|y| w2.get(x, y) == Material::Fire));
     assert!(any_fire2, "default 40-tick fire must still burn after 10 steps");
 }
+
+#[test]
+fn fire_spreads_at_most_one_cell_per_frame() {
+    // A vertical spore column (100% flammable) lit at the BOTTOM. The sweep is always
+    // bottom-up, so without stamping ignited cells, fire chains up the whole column in a
+    // single frame. Correct behavior: the burning frontier advances one cell per frame.
+    let mut w = World::new(64, 64);
+    for y in 10..50 {
+        w.paint(32, y, 0, Material::SporeGas as u8);
+    }
+    w.paint(32, 49, 0, Material::Fire as u8); // light the bottom (highest y)
+    w.step();
+    assert!(
+        w.burning_count() <= 3,
+        "one step must not chain fire up the whole column (got {} burning)",
+        w.burning_count()
+    );
+}
