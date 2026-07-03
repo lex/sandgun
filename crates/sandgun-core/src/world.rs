@@ -1,5 +1,5 @@
 use crate::cell::{Cell, Material, FLAG_BURNING};
-use crate::params::{Params, P_FIRE_FLICKER, P_SMOKE_EMIT, P_SMOKE_LIFETIME};
+use crate::params::{Params, P_ACID_ETCH, P_ACID_ETCH_ROCK, P_FIRE_FLICKER, P_SMOKE_EMIT, P_SMOKE_LIFETIME};
 
 pub const CHUNK: usize = 64;
 pub const DISPERSION: isize = 4;
@@ -369,8 +369,50 @@ impl World {
         }
     }
 
-    fn update_acid(&mut self, _x: usize, _y: usize) {
-        // Task 4
+    fn acid_etch_chance(&self, m: Material) -> f32 {
+        match m {
+            Material::Empty
+            | Material::Acid
+            | Material::Fire
+            | Material::Smoke
+            | Material::SporeGas
+            | Material::Water => 0.0,
+            Material::Rock => self.params.values[P_ACID_ETCH_ROCK],
+            _ => self.params.values[P_ACID_ETCH],
+        }
+    }
+
+    fn update_acid(&mut self, x: usize, y: usize) {
+        let (xi, yi) = (x as isize, y as isize);
+        let dirs = [(xi, yi + 1), (xi - 1, yi), (xi + 1, yi), (xi, yi - 1)];
+        // stay awake while anything etchable is adjacent — otherwise a run of missed
+        // rolls could let the chunk sleep mid-meal. Charges still bound total lifetime.
+        if dirs
+            .iter()
+            .any(|&(nx, ny)| self.in_bounds(nx, ny) && self.acid_etch_chance(self.material_at(nx, ny)) > 0.0)
+        {
+            self.wake(x, y);
+        }
+        // try to dissolve one random 4-neighbor
+        let (nx, ny) = dirs[(self.next_rand() % 4) as usize];
+        if self.in_bounds(nx, ny) {
+            let p = self.acid_etch_chance(self.material_at(nx, ny));
+            if p > 0.0 && self.chance(p) {
+                let ni = self.idx(nx as usize, ny as usize);
+                self.cells[ni] = Cell::default();
+                self.stamp[ni] = self.frame_u8();
+                self.wake(nx as usize, ny as usize);
+                let i = self.idx(x, y);
+                if self.cells[i].aux <= 1 {
+                    self.cells[i] = Cell::default(); // spent
+                } else {
+                    self.cells[i].aux -= 1;
+                }
+                self.wake(x, y);
+                return;
+            }
+        }
+        self.update_liquid(x, y, Material::Acid);
     }
 
     fn update_gas(&mut self, x: usize, y: usize, mat: Material) {
