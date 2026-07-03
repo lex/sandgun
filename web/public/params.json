@@ -1,0 +1,16 @@
+{
+  "fire_lifetime": 40,
+  "smoke_lifetime": 120,
+  "smoke_emit": 0.2,
+  "fire_flicker": 0.35,
+  "flam_oil": 0.65,
+  "flam_mycelium": 0.22,
+  "flam_flesh": 0.06,
+  "flam_sporegas": 1.0,
+  "fuel_oil": 90,
+  "fuel_mycelium": 130,
+  "fuel_flesh": 220,
+  "fuel_sporegas": 6,
+  "acid_etch": 0.35,
+  "acid_etch_rock": 0.04
+}

@@ -1,12 +1,17 @@
 import { M } from './scene.js';
 
-const KEYS = { '1': M.SAND, '2': M.WATER, '3': M.OIL, '4': M.ROCK, '0': M.EMPTY, 'e': M.EMPTY };
-const NAMES = ['erase', 'rock', 'sand', 'water', 'oil'];
+const KEYS = {
+  '1': M.SAND, '2': M.WATER, '3': M.OIL, '4': M.ROCK, '5': M.SOIL,
+  '6': M.MYCELIUM, '7': M.FLESH, '8': M.SPOREGAS, '9': M.ACID,
+  'f': M.FIRE, '0': M.EMPTY, 'e': M.EMPTY,
+};
+const NAMES = ['erase', 'rock', 'sand', 'water', 'oil', 'soil', 'mycelium',
+  'flesh', 'spores', 'smoke', 'ash', 'acid', 'FIRE'];
 
 export function attachInput(canvas, worldW, worldH) {
   const input = {
     down: false, x: 0, y: 0, px: null, py: null,
-    material: M.SAND, radius: 4, debug: false, regen: false,
+    material: M.SAND, radius: 4, debug: false, regen: false, reloadParams: false,
     get status() { return `${NAMES[this.material]} r${this.radius}`; },
   };
   const toWorld = (e) => {
@@ -24,6 +29,7 @@ export function attachInput(canvas, worldW, worldH) {
     if (k === ']') input.radius = Math.min(24, input.radius + 1);
     if (k === 'd') input.debug = !input.debug;
     if (k === 'n') input.regen = true;
+    if (k === 'p') input.reloadParams = true;
   });
   return input;
 }
@@ -32,6 +38,10 @@ export function applyInput(input, world) {
   if (input.regen) {
     input.regen = false;
     world.generate((Math.random() * 0xFFFFFFFF) >>> 0);
+  }
+  if (input.reloadParams) {
+    input.reloadParams = false;
+    input.onReloadParams?.();
   }
   if (!input.down) return;
   // interpolate from the previous point so fast drags leave no gaps
