@@ -1,4 +1,4 @@
-use crate::cell::{Cell, Material};
+use crate::cell::{Cell, Material, FLAG_BURNING};
 use crate::params::Params;
 
 pub const CHUNK: usize = 64;
@@ -175,15 +175,38 @@ impl World {
         if self.stamp[i] == self.frame_u8() {
             return; // already moved this frame
         }
-        let mat = Material::from_u8(self.cells[i].material);
-        if mat == Material::Empty || mat.is_solid() {
+        let cell = self.cells[i];
+        let mat = Material::from_u8(cell.material);
+        if mat == Material::Empty {
             return;
         }
-        self.cells_processed += 1;
-        if mat.is_powder() {
-            self.update_powder(x, y);
-        } else if mat.is_liquid() {
-            self.update_liquid(x, y, mat);
+        if cell.flags & FLAG_BURNING != 0 {
+            self.cells_processed += 1;
+            self.update_burning(x, y);
+            return;
+        }
+        match mat {
+            Material::Fire => {
+                self.cells_processed += 1;
+                self.update_fire(x, y);
+            }
+            Material::Acid => {
+                self.cells_processed += 1;
+                self.update_acid(x, y);
+            }
+            m if m.is_gas() => {
+                self.cells_processed += 1;
+                self.update_gas(x, y, m);
+            }
+            m if m.is_powder() => {
+                self.cells_processed += 1;
+                self.update_powder(x, y);
+            }
+            m if m.is_liquid() => {
+                self.cells_processed += 1;
+                self.update_liquid(x, y, m);
+            }
+            _ => {} // static solids (Rock, Mycelium, MushroomFlesh) cost nothing
         }
     }
 
@@ -246,6 +269,55 @@ impl World {
                     false
                 };
                 if is_drop {
+                    self.swap_cells(x, y, nx as usize, y);
+                    return;
+                }
+            }
+        }
+    }
+
+    fn update_burning(&mut self, _x: usize, _y: usize) {
+        // Task 3
+    }
+
+    fn update_fire(&mut self, _x: usize, _y: usize) {
+        // Task 3
+    }
+
+    fn update_acid(&mut self, _x: usize, _y: usize) {
+        // Task 4
+    }
+
+    fn update_gas(&mut self, x: usize, y: usize, mat: Material) {
+        let i = self.idx(x, y);
+        if mat == Material::Smoke {
+            if self.cells[i].aux == 0 {
+                self.cells[i] = Cell::default();
+                self.wake(x, y);
+                return;
+            }
+            self.cells[i].aux -= 1;
+            self.wake(x, y); // fading smoke keeps its chunk lit until it dies
+        }
+        let (xi, yi) = (x as isize, y as isize);
+        // rise straight, then random diagonal, into empty
+        let first_dx = if self.next_rand() & 1 == 0 { -1 } else { 1 };
+        for (nx, ny) in [(xi, yi - 1), (xi + first_dx, yi - 1), (xi - first_dx, yi - 1)] {
+            if self.in_bounds(nx, ny) && self.material_at(nx, ny) == Material::Empty {
+                self.swap_cells(x, y, nx as usize, ny as usize);
+                return;
+            }
+        }
+        // rest-seeking sideways: slide only toward a cell it could rise from
+        let first_dir: isize = if self.next_rand() & 1 == 0 { 1 } else { -1 };
+        for dir in [first_dir, -first_dir] {
+            let mut nx = xi;
+            for _ in 0..DISPERSION {
+                nx += dir;
+                if !self.in_bounds(nx, yi) || self.material_at(nx, yi) != Material::Empty {
+                    break;
+                }
+                if self.material_at(nx, yi - 1) == Material::Empty {
                     self.swap_cells(x, y, nx as usize, y);
                     return;
                 }
