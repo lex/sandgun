@@ -1,17 +1,19 @@
 import init, { WasmWorld } from './pkg/sandgun_wasm.js';
 import { initGL, blit } from './renderer.js';
-import { seedScene } from './scene.js';
+import { attachInput, applyInput } from './input.js';
 
 const W = 640, H = 384;
 
 const wasm = await init();
 const world = new WasmWorld(W, H);
-seedScene(world, W, H);
+world.generate((Math.random() * 0xFFFFFFFF) >>> 0);
 
 const ctx = initGL(document.getElementById('view'), W, H);
-window.sandgun = { world, wasm }; // console poking
+const input = attachInput(document.getElementById('view'), W, H);
+window.sandgun = { world, wasm, input }; // console poking
 
 function frame() {
+  applyInput(input, world);
   world.step();
   world.render();
   // wasm memory growth invalidates old buffers — take a fresh view every frame

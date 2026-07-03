@@ -67,9 +67,11 @@ Modest table, ~12–15 pairs total. Order:
 ## Milestones
 
 ### M0 — Skeleton (prove the pipeline)
-Rust→WASM builds, canvas renders, mouse paints materials. Sand piles, water flows, oil floats
-on water. Dirty-rect chunk skipping working (visible via debug overlay).
-**Done when:** painting and watching materials is smooth at 60fps full-screen on the Mac.
+Rust→WASM builds, canvas renders. Sand piles, water flows, oil floats on water. Worlds are
+**procedurally generated** (seeded terrain + caves + material pockets — user decision 2026-07-03:
+SANDGUN is not a paint-your-own-sandbox game); mouse painting exists only as a debug tool.
+Dirty-rect chunk skipping working (visible via debug overlay).
+**Done when:** a generated world settles alive and stays smooth at 60fps full-screen on the Mac.
 
 ### M1 — The Grin Test (kill criterion)
 One gun, swappable ammo: kinetic (crater + ejecta particles), incendiary (fire chains), acid.

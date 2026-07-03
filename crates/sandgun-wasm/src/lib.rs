@@ -15,6 +15,9 @@ impl WasmWorld {
     pub fn step(&mut self) {
         self.inner.step();
     }
+    pub fn generate(&mut self, seed: u32) {
+        sandgun_core::worldgen::generate(&mut self.inner, seed);
+    }
     pub fn paint(&mut self, x: i32, y: i32, radius: i32, material: u8) {
         self.inner.paint(x, y, radius, material);
     }

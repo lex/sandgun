@@ -56,6 +56,17 @@ impl World {
         Material::from_u8(self.cells[self.idx(x, y)].material)
     }
 
+    /// Reset every cell to Empty and clear movement stamps (used by worldgen).
+    pub fn clear(&mut self) {
+        self.cells.fill(Cell::default());
+        self.stamp.fill(0);
+    }
+
+    /// Wake every chunk for the next step (used after worldgen).
+    pub fn wake_all(&mut self) {
+        self.active_next.iter_mut().for_each(|b| *b = 1);
+    }
+
     pub(crate) fn next_rand(&mut self) -> u32 {
         // xorshift32 — deterministic, no external deps
         let mut r = self.rng;
