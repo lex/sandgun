@@ -63,3 +63,96 @@ fn projectiles_alone_do_not_keep_the_world_awake() {
     assert_eq!(w.projectile_count(), 0);
     assert_eq!(w.cells_processed, 0, "stub impact leaves the grid settled");
 }
+
+#[test]
+fn fire_with_zero_velocity_is_rejected() {
+    let mut w = World::new(64, 64);
+    w.fire(32.0, 32.0, 0.0, 0.0, Ammo::Kinetic as u8);
+    assert_eq!(w.projectile_count(), 0, "zero-velocity projectile must not be spawned");
+}
+
+#[test]
+fn fire_with_nan_velocity_is_rejected() {
+    let mut w = World::new(64, 64);
+    w.fire(32.0, 32.0, f32::NAN, 0.0, Ammo::Kinetic as u8);
+    assert_eq!(
+        w.projectile_count(),
+        0,
+        "NaN velocity projectile must not be spawned"
+    );
+
+    let mut w2 = World::new(64, 64);
+    w2.fire(32.0, 32.0, 0.0, f32::NAN, Ammo::Kinetic as u8);
+    assert_eq!(
+        w2.projectile_count(),
+        0,
+        "NaN velocity projectile must not be spawned"
+    );
+}
+
+#[test]
+fn fire_with_infinite_velocity_is_rejected() {
+    let mut w = World::new(64, 64);
+    w.fire(32.0, 32.0, f32::INFINITY, 0.0, Ammo::Kinetic as u8);
+    assert_eq!(
+        w.projectile_count(),
+        0,
+        "infinite velocity projectile must not be spawned"
+    );
+
+    let mut w2 = World::new(64, 64);
+    w2.fire(32.0, 32.0, 0.0, f32::NEG_INFINITY, Ammo::Kinetic as u8);
+    assert_eq!(
+        w2.projectile_count(),
+        0,
+        "infinite velocity projectile must not be spawned"
+    );
+}
+
+#[test]
+fn fire_with_extreme_velocity_is_clamped_and_completes() {
+    let mut w = World::new(64, 64);
+    // Create walls at x=10 and x=54 to bound the projectile
+    for y in 0..64 {
+        w.paint(10, y, 0, Material::Rock as u8);
+        w.paint(54, y, 0, Material::Rock as u8);
+    }
+    // Fire with extreme velocity (1000.0)
+    w.fire(32.0, 32.0, 1000.0, 0.0, Ammo::Kinetic as u8);
+    assert_eq!(w.projectile_count(), 1);
+
+    // Step should complete without hanging/infinite loop
+    // and projectile should hit the wall eventually
+    for _ in 0..100 {
+        w.step();
+        if w.projectile_count() == 0 {
+            break;
+        }
+    }
+    assert_eq!(
+        w.projectile_count(),
+        0,
+        "high-velocity projectile must eventually hit a wall and terminate"
+    );
+}
+
+#[test]
+fn normal_velocity_projectiles_still_work() {
+    let mut w = World::new(64, 64);
+    for y in 0..64 {
+        w.paint(40, y, 0, Material::Rock as u8);
+    }
+    w.fire(5.0, 32.0, 6.0, 0.0, Ammo::Kinetic as u8);
+    assert_eq!(w.projectile_count(), 1);
+    w.step();
+    // Should have moved and still be alive
+    assert_eq!(w.projectile_count(), 1);
+    for _ in 0..30 {
+        w.step();
+    }
+    assert_eq!(
+        w.projectile_count(),
+        0,
+        "normal projectile eventually hits wall"
+    );
+}

@@ -7,6 +7,7 @@ pub const CHUNK: usize = 64;
 pub const DISPERSION: isize = 4;
 pub const PARTICLE_GRAVITY: f32 = 0.35;
 const PARTICLE_MAX_SPEED: f32 = 8.0;
+const PROJECTILE_MAX_SPEED: f32 = 24.0;
 
 pub struct World {
     pub width: usize,
@@ -186,11 +187,20 @@ impl World {
     }
 
     pub fn fire(&mut self, x: f32, y: f32, vx: f32, vy: f32, ammo: u8) {
+        // Validate velocity: reject if non-finite or both zero
+        if !vx.is_finite() || !vy.is_finite() || (vx == 0.0 && vy == 0.0) {
+            return; // silently ignore invalid projectiles
+        }
+
+        // Clamp velocity components to prevent infinite substep loops
+        let vx_clamped = vx.clamp(-PROJECTILE_MAX_SPEED, PROJECTILE_MAX_SPEED);
+        let vy_clamped = vy.clamp(-PROJECTILE_MAX_SPEED, PROJECTILE_MAX_SPEED);
+
         self.projectiles.push(Projectile {
             x,
             y,
-            vx,
-            vy,
+            vx: vx_clamped,
+            vy: vy_clamped,
             ammo: Ammo::from_u8(ammo),
             alive: true,
         });
@@ -217,6 +227,9 @@ impl World {
         let existing = std::mem::take(&mut self.projectiles);
         let mut survivors = Vec::with_capacity(existing.len());
         for mut p in existing {
+            // Clamp velocity to keep the ray-march bounded and prevent NaN propagation
+            p.vx = p.vx.clamp(-PROJECTILE_MAX_SPEED, PROJECTILE_MAX_SPEED);
+            p.vy = p.vy.clamp(-PROJECTILE_MAX_SPEED, PROJECTILE_MAX_SPEED);
             let steps = p.vx.abs().max(p.vy.abs()).ceil().max(1.0) as i32;
             let (sx, sy) = (p.vx / steps as f32, p.vy / steps as f32);
             for _ in 0..steps {
