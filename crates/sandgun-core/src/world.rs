@@ -1,6 +1,7 @@
 use crate::cell::{Cell, Material, FLAG_BURNING};
 use crate::params::{Params, P_ACID_ETCH, P_ACID_ETCH_ROCK, P_FIRE_FLICKER, P_FIRE_LIFETIME, P_SMOKE_EMIT, P_SMOKE_LIFETIME};
 use crate::particle::Particle;
+use crate::projectile::{Ammo, Projectile};
 
 pub const CHUNK: usize = 64;
 pub const DISPERSION: isize = 4;
@@ -26,6 +27,7 @@ pub struct World {
     pub cells_processed: u64,
     pub params: Params,
     pub(crate) particles: Vec<Particle>,
+    pub(crate) projectiles: Vec<Projectile>,
 }
 
 impl World {
@@ -47,6 +49,7 @@ impl World {
             cells_processed: 0,
             params: Params::default(),
             particles: Vec::new(),
+            projectiles: Vec::new(),
         }
     }
 
@@ -178,7 +181,71 @@ impl World {
                 }
             }
         }
+        self.update_projectiles();
         self.update_particles();
+    }
+
+    pub fn fire(&mut self, x: f32, y: f32, vx: f32, vy: f32, ammo: u8) {
+        self.projectiles.push(Projectile {
+            x,
+            y,
+            vx,
+            vy,
+            ammo: Ammo::from_u8(ammo),
+            alive: true,
+        });
+    }
+
+    pub fn projectile_count(&self) -> usize {
+        self.projectiles.len()
+    }
+
+    /// Flat [x0,y0,x1,y1,...] world coords of live projectiles, for rendering.
+    pub fn projectiles_xy(&self) -> Vec<f32> {
+        let mut v = Vec::with_capacity(self.projectiles.len() * 2);
+        for p in &self.projectiles {
+            v.push(p.x);
+            v.push(p.y);
+        }
+        v
+    }
+
+    pub(crate) fn update_projectiles(&mut self) {
+        if self.projectiles.is_empty() {
+            return;
+        }
+        let existing = std::mem::take(&mut self.projectiles);
+        let mut survivors = Vec::with_capacity(existing.len());
+        for mut p in existing {
+            let steps = p.vx.abs().max(p.vy.abs()).ceil().max(1.0) as i32;
+            let (sx, sy) = (p.vx / steps as f32, p.vy / steps as f32);
+            for _ in 0..steps {
+                let nx = p.x + sx;
+                let ny = p.y + sy;
+                let (cx, cy) = (nx.floor() as isize, ny.floor() as isize);
+                if !self.in_bounds(cx, cy) {
+                    p.alive = false;
+                    break;
+                }
+                let m = self.material_at(cx, cy);
+                if m == Material::Empty || m.is_gas() {
+                    p.x = nx;
+                    p.y = ny;
+                } else {
+                    self.on_impact(cx, cy, p.ammo);
+                    p.alive = false;
+                    break;
+                }
+            }
+            if p.alive {
+                survivors.push(p);
+            }
+        }
+        self.projectiles = survivors;
+    }
+
+    fn on_impact(&mut self, _cx: isize, _cy: isize, _ammo: Ammo) {
+        // Task 3 fills this in per ammo type.
     }
 
     pub fn spawn_particle(&mut self, x: f32, y: f32, vx: f32, vy: f32, material: u8) {
