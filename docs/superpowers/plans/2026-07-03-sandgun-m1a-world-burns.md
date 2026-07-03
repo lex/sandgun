@@ -789,20 +789,27 @@ use sandgun_core::cell::Material;
 use sandgun_core::world::World;
 
 #[test]
-fn acid_eats_through_a_sand_shelf() {
+fn acid_eats_through_a_sand_plug() {
+    // Amended: the original floating shelf fell by gravity, passing vacuously.
+    // This plug rests on the world floor between rock walls — only acid can shrink it.
     let mut w = World::new(64, 64);
-    for x in 20..=40 {
-        for y in 40..=43 {
+    for y in 56..64 {
+        w.paint(28, y, 0, Material::Rock as u8);
+        w.paint(36, y, 0, Material::Rock as u8);
+    }
+    for x in 29..36 {
+        for y in 58..64 {
             w.paint(x, y, 0, Material::Sand as u8);
         }
     }
-    w.paint(30, 38, 1, Material::Acid as u8);
-    for _ in 0..1200 {
+    let initial: usize = (29..36).map(|x| (58..64).filter(|&y| w.get(x, y) == Material::Sand).count()).sum();
+    assert_eq!(initial, 42);
+    w.paint(32, 56, 1, Material::Acid as u8);
+    for _ in 0..1500 {
         w.step();
     }
-    let hole = (40..=43).any(|y| w.get(30, y) == Material::Empty)
-        || (44..64).any(|y| w.get(30, y) == Material::Acid);
-    assert!(hole, "acid must corrode into or through the shelf");
+    let sand: usize = (0..64).map(|x| (0..64).filter(|&y| w.get(x, y) == Material::Sand).count()).sum();
+    assert!(sand < 35, "acid must corrode well into the plug ({sand}/42 cells left)");
 }
 
 #[test]
