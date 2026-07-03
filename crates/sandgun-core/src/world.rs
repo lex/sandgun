@@ -1,4 +1,5 @@
 use crate::cell::{Cell, Material};
+use crate::params::Params;
 
 pub const CHUNK: usize = 64;
 pub const DISPERSION: isize = 4;
@@ -20,6 +21,7 @@ pub struct World {
     pub(crate) rgba: Vec<u8>,
     /// Cells visited by the last step(); test + debug hook for chunk skipping.
     pub cells_processed: u64,
+    pub params: Params,
 }
 
 impl World {
@@ -39,6 +41,7 @@ impl World {
             rng: 0x9E37_79B9,
             rgba: vec![0; width * height * 4],
             cells_processed: 0,
+            params: Params::default(),
         }
     }
 
@@ -77,6 +80,22 @@ impl World {
         r
     }
 
+    /// true with probability p (0..1); deterministic via the sim RNG.
+    pub(crate) fn chance(&mut self, p: f32) -> bool {
+        if p <= 0.0 {
+            return false;
+        }
+        (self.next_rand() >> 8) as f32 / 16_777_216.0 < p
+    }
+
+    /// Material at (x, y); out of bounds reads as Rock (the border blocks everything).
+    pub(crate) fn material_at(&self, x: isize, y: isize) -> Material {
+        if !self.in_bounds(x, y) {
+            return Material::Rock;
+        }
+        Material::from_u8(self.cells[self.idx(x as usize, y as usize)].material)
+    }
+
     /// Wake the chunks containing (x, y) and its 8 neighbors for the next step.
     pub(crate) fn wake(&mut self, x: usize, y: usize) {
         let (w, h) = (self.width as isize, self.height as isize);
@@ -104,7 +123,7 @@ impl World {
                 }
                 let shade = (self.next_rand() & 3) as u8;
                 let i = self.idx(x as usize, y as usize);
-                self.cells[i] = Cell { material, shade, flags: 0, aux: 0 };
+                self.cells[i] = Cell::new(Material::from_u8(material), shade);
                 self.wake(x as usize, y as usize);
             }
         }

@@ -25,7 +25,7 @@ impl GenRng {
 
 fn set(world: &mut World, x: usize, y: usize, m: Material, rng: &mut GenRng) {
     let i = y * world.width + x;
-    world.cells[i] = Cell { material: m as u8, shade: (rng.next() & 3) as u8, flags: 0, aux: 0 };
+    world.cells[i] = Cell::new(m, (rng.next() & 3) as u8);
 }
 
 fn blob(world: &mut World, rng: &mut GenRng, cx: i32, cy: i32, radius: i32, m: Material) {
