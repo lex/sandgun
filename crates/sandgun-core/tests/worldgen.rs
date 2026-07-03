@@ -54,6 +54,10 @@ fn generated_world_has_terrain_air_and_materials() {
     assert!(count(&w, Material::Sand) > 50, "sand pockets present");
     assert!(count(&w, Material::Water) > 50, "water pools present");
     assert!(count(&w, Material::Oil) > 50, "oil pockets present");
+    assert!(count(&w, Material::Soil) > 300, "soil crust present");
+    assert!(count(&w, Material::Mycelium) > 60, "mycelium veins present");
+    assert!(count(&w, Material::MushroomFlesh) > 80, "mushroom groves present");
+    assert!(count(&w, Material::SporeGas) > 40, "spore pockets present");
 }
 
 #[test]
