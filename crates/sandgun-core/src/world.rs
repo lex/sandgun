@@ -150,42 +150,16 @@ impl World {
 
     fn update_powder(&mut self, x: usize, y: usize) {
         let (xi, yi) = (x as isize, y as isize);
-
-        // Try straight down
-        if self.in_bounds(xi, yi + 1) {
-            let below_idx = self.idx(xi as usize, (yi + 1) as usize);
-            let dst = Material::from_u8(self.cells[below_idx].material);
-            if dst == Material::Empty || dst.is_liquid() {
-                self.swap_cells(x, y, xi as usize, (yi + 1) as usize);
-                return;
+        let first_dx = if self.next_rand() & 1 == 0 { -1 } else { 1 };
+        let candidates = [(xi, yi + 1), (xi + first_dx, yi + 1), (xi - first_dx, yi + 1)];
+        for (nx, ny) in candidates {
+            if !self.in_bounds(nx, ny) {
+                continue;
             }
-            // Only slide diagonally if:
-            // 1. Blocked by powder (sand) AND
-            // 2. There's also powder above (unstable peak - needs support from above to trigger sliding)
-            if dst.is_powder() {
-                let above_idx = self.idx(xi as usize, (yi - 1) as usize);
-                let above_material = if yi > 0 {
-                    Material::from_u8(self.cells[above_idx].material)
-                } else {
-                    Material::Empty
-                };
-
-                if above_material.is_powder() {
-                    // Unstable configuration - try sliding diagonally
-                    let first_dx = if self.next_rand() & 1 == 0 { -1 } else { 1 };
-                    let candidates = [(xi + first_dx, yi + 1), (xi - first_dx, yi + 1)];
-                    for (nx, ny) in candidates {
-                        if !self.in_bounds(nx, ny) {
-                            continue;
-                        }
-                        let diag_idx = self.idx(nx as usize, ny as usize);
-                        let diag_dst = Material::from_u8(self.cells[diag_idx].material);
-                        if diag_dst == Material::Empty || diag_dst.is_liquid() {
-                            self.swap_cells(x, y, nx as usize, ny as usize);
-                            return;
-                        }
-                    }
-                }
+            let dst = Material::from_u8(self.cells[self.idx(nx as usize, ny as usize)].material);
+            if dst == Material::Empty || dst.is_liquid() {
+                self.swap_cells(x, y, nx as usize, ny as usize); // sinks through liquid by displacement
+                return;
             }
         }
     }
