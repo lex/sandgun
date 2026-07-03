@@ -1,8 +1,11 @@
 use crate::cell::{Cell, Material, FLAG_BURNING};
 use crate::params::{Params, P_ACID_ETCH, P_ACID_ETCH_ROCK, P_FIRE_FLICKER, P_FIRE_LIFETIME, P_SMOKE_EMIT, P_SMOKE_LIFETIME};
+use crate::particle::Particle;
 
 pub const CHUNK: usize = 64;
 pub const DISPERSION: isize = 4;
+pub const PARTICLE_GRAVITY: f32 = 0.35;
+const PARTICLE_MAX_SPEED: f32 = 8.0;
 
 pub struct World {
     pub width: usize,
@@ -22,6 +25,7 @@ pub struct World {
     /// Cells visited by the last step(); test + debug hook for chunk skipping.
     pub cells_processed: u64,
     pub params: Params,
+    pub(crate) particles: Vec<Particle>,
 }
 
 impl World {
@@ -42,6 +46,7 @@ impl World {
             rgba: vec![0; width * height * 4],
             cells_processed: 0,
             params: Params::default(),
+            particles: Vec::new(),
         }
     }
 
@@ -173,6 +178,77 @@ impl World {
                 }
             }
         }
+        self.update_particles();
+    }
+
+    pub fn spawn_particle(&mut self, x: f32, y: f32, vx: f32, vy: f32, material: u8) {
+        self.particles.push(Particle { x, y, vx, vy, material });
+    }
+
+    pub fn particle_count(&self) -> usize {
+        self.particles.len()
+    }
+
+    /// A cell a particle can fly through without settling.
+    fn particle_passable(&self, x: isize, y: isize) -> bool {
+        let m = self.material_at(x, y);
+        m == Material::Empty || m.is_gas()
+    }
+
+    pub(crate) fn update_particles(&mut self) {
+        if self.particles.is_empty() {
+            return;
+        }
+        let mut survivors: Vec<Particle> = Vec::with_capacity(self.particles.len());
+        let existing = std::mem::take(&mut self.particles);
+        for mut p in existing {
+            p.vy += PARTICLE_GRAVITY;
+            // clamp speed to keep the ray-march bounded and avoid tunneling
+            p.vx = p.vx.clamp(-PARTICLE_MAX_SPEED, PARTICLE_MAX_SPEED);
+            p.vy = p.vy.clamp(-PARTICLE_MAX_SPEED, PARTICLE_MAX_SPEED);
+            let steps = p.vx.abs().max(p.vy.abs()).ceil().max(1.0) as i32;
+            let (sx, sy) = (p.vx / steps as f32, p.vy / steps as f32);
+            let mut settled = false;
+            let mut last_x = p.x;
+            let mut last_y = p.y;
+            for _ in 0..steps {
+                let nx = p.x + sx;
+                let ny = p.y + sy;
+                let (cx, cy) = (nx.floor() as isize, ny.floor() as isize);
+                if !self.in_bounds(cx, cy) {
+                    // left the world: if it went out the sides/top/bottom, drop it
+                    settled = true; // "settled" here means "remove from list"
+                    last_x = f32::NAN; // sentinel: don't write to grid
+                    break;
+                }
+                if self.particle_passable(cx, cy) {
+                    p.x = nx;
+                    p.y = ny;
+                    last_x = nx;
+                    last_y = ny;
+                } else {
+                    // blocked: resettle into the last passable cell we occupied
+                    settled = true;
+                    break;
+                }
+            }
+            if settled {
+                if last_x.is_finite() {
+                    let (cx, cy) = (last_x.floor() as isize, last_y.floor() as isize);
+                    if self.in_bounds(cx, cy) && self.material_at(cx, cy) == Material::Empty {
+                        let (ux, uy) = (cx as usize, cy as usize);
+                        let shade = (self.next_rand() & 3) as u8;
+                        let i = self.idx(ux, uy);
+                        self.cells[i] = Cell::new(Material::from_u8(p.material), shade);
+                        self.wake(ux, uy);
+                    }
+                    // if the last cell isn't empty (rare — landed on a gas that filled), drop silently
+                }
+            } else {
+                survivors.push(p);
+            }
+        }
+        self.particles = survivors;
     }
 
     fn update_cell(&mut self, x: usize, y: usize) {
