@@ -81,3 +81,67 @@ fn rock_never_moves() {
     assert_eq!(w.get(10, 10), Material::Rock);
     assert_eq!(w.get(10, 11), Material::Empty);
 }
+
+#[test]
+fn water_falls_then_spreads_sideways() {
+    let mut w = World::new(64, 64);
+    w.paint(32, 60, 0, Material::Water as u8);
+    w.step(); // falls
+    for _ in 0..3 {
+        w.step(); // reaches floor, disperses
+    }
+    assert_eq!(w.get(32, 60), Material::Empty);
+    let spread = (0..64).any(|x| x != 32 && w.get(x, 63) == Material::Water);
+    assert!(spread, "water on the floor must move horizontally");
+}
+
+#[test]
+fn water_sinks_below_oil() {
+    let mut w = World::new(64, 64);
+    // rock walls stop the oil dispersing sideways before the swap is tested
+    for y in 61..=63 {
+        w.paint(9, y, 0, Material::Rock as u8);
+        w.paint(11, y, 0, Material::Rock as u8);
+    }
+    w.paint(10, 63, 0, Material::Oil as u8);
+    w.paint(10, 62, 0, Material::Water as u8);
+    w.step();
+    assert_eq!(w.get(10, 63), Material::Water, "denser water sinks");
+    assert_eq!(w.get(10, 62), Material::Oil, "oil floats up");
+}
+
+#[test]
+fn sand_sinks_through_water() {
+    let mut w = World::new(64, 64);
+    // walled column so the water can't slide out from under the sand
+    for y in 61..=63 {
+        w.paint(9, y, 0, Material::Rock as u8);
+        w.paint(11, y, 0, Material::Rock as u8);
+    }
+    w.paint(10, 63, 0, Material::Water as u8);
+    w.paint(10, 61, 0, Material::Sand as u8);
+    for _ in 0..5 {
+        w.step();
+    }
+    assert_eq!(w.get(10, 63), Material::Sand, "sand displaces the water");
+    assert_eq!(w.get(10, 62), Material::Water, "water is pushed up, not deleted");
+}
+
+#[test]
+fn liquids_do_not_pass_through_rock() {
+    let mut w = World::new(64, 64);
+    // rock cup: floor at y=50 spanning x=20..=24, walls at x=20 and x=24
+    for x in 20..=24 {
+        w.paint(x, 50, 0, Material::Rock as u8);
+    }
+    for y in 45..50 {
+        w.paint(20, y, 0, Material::Rock as u8);
+        w.paint(24, y, 0, Material::Rock as u8);
+    }
+    w.paint(22, 47, 0, Material::Water as u8);
+    for _ in 0..30 {
+        w.step();
+    }
+    let inside = (21..=23).any(|x| (45..=49).any(|y| w.get(x, y) == Material::Water));
+    assert!(inside, "water must still be inside the rock cup");
+}

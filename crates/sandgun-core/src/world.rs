@@ -164,7 +164,45 @@ impl World {
         }
     }
 
-    fn update_liquid(&mut self, _x: usize, _y: usize, _mat: Material) {
-        // Task 3
+    fn update_liquid(&mut self, x: usize, y: usize, mat: Material) {
+        let (xi, yi) = (x as isize, y as isize);
+        let my_density = mat.density();
+
+        // Fall / diagonal-fall into empty or a lighter liquid (displacement swap).
+        let first_dx = if self.next_rand() & 1 == 0 { -1 } else { 1 };
+        let falls = [(xi, yi + 1), (xi + first_dx, yi + 1), (xi - first_dx, yi + 1)];
+        for (nx, ny) in falls {
+            if !self.in_bounds(nx, ny) {
+                continue;
+            }
+            let dst = Material::from_u8(self.cells[self.idx(nx as usize, ny as usize)].material);
+            if dst == Material::Empty || (dst.is_liquid() && dst.density() < my_density) {
+                self.swap_cells(x, y, nx as usize, ny as usize);
+                return;
+            }
+        }
+
+        // Horizontal dispersion: farthest consecutive empty cell within DISPERSION, random side first.
+        let first_dir: isize = if self.next_rand() & 1 == 0 { 1 } else { -1 };
+        for dir in [first_dir, -first_dir] {
+            let mut target: Option<usize> = None;
+            let mut nx = xi;
+            for _ in 0..DISPERSION {
+                nx += dir;
+                if !self.in_bounds(nx, yi) {
+                    break;
+                }
+                let dst = Material::from_u8(self.cells[self.idx(nx as usize, y)].material);
+                if dst == Material::Empty {
+                    target = Some(nx as usize);
+                } else {
+                    break; // anything non-empty blocks the slide
+                }
+            }
+            if let Some(tx) = target {
+                self.swap_cells(x, y, tx, y);
+                return;
+            }
+        }
     }
 }
