@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>SANDGUN</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #0d0c10; overflow: hidden; }
+      #stage { position: relative; width: 100vw; height: 100vh; display: flex; align-items: center; justify-content: center; }
+      canvas { image-rendering: pixelated; }
+      #view { width: min(100vw, calc(100vh * 640 / 384)); }
+      #overlay { position: absolute; pointer-events: none; }
+    </style>
+  </head>
+  <body>
+    <div id="stage">
+      <canvas id="view" width="640" height="384"></canvas>
+      <canvas id="overlay" width="640" height="384"></canvas>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
