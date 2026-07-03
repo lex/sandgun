@@ -223,9 +223,13 @@ impl World {
             if !self.in_bounds(nx, ny) {
                 continue;
             }
-            let dst = Material::from_u8(self.cells[self.idx(nx as usize, ny as usize)].material);
-            if dst == Material::Empty || dst.is_liquid() {
-                self.swap_cells(x, y, nx as usize, ny as usize); // sinks through liquid by displacement
+            let ni = self.idx(nx as usize, ny as usize);
+            let dst = Material::from_u8(self.cells[ni].material);
+            // Sink into empty (cascades freely — empty isn't a conserved particle) or displace
+            // a liquid, but never a liquid that already moved this frame: that would ride the
+            // bottom-up sweep and teleport one liquid cell up the whole column in a single tick.
+            if dst == Material::Empty || (dst.is_liquid() && self.stamp[ni] != self.frame_u8()) {
+                self.swap_cells(x, y, nx as usize, ny as usize);
                 return;
             }
         }
@@ -242,8 +246,14 @@ impl World {
             if !self.in_bounds(nx, ny) {
                 continue;
             }
-            let dst = Material::from_u8(self.cells[self.idx(nx as usize, ny as usize)].material);
-            if dst == Material::Empty || (dst.is_liquid() && dst.density() < my_density) {
+            let ni = self.idx(nx as usize, ny as usize);
+            let dst = Material::from_u8(self.cells[ni].material);
+            // As in update_powder: fall into empty freely, but only displace a lighter liquid
+            // that hasn't already moved this frame, so displacement propagates one cell per
+            // frame instead of teleporting a liquid cell up the sweep.
+            if dst == Material::Empty
+                || (dst.is_liquid() && dst.density() < my_density && self.stamp[ni] != self.frame_u8())
+            {
                 self.swap_cells(x, y, nx as usize, ny as usize);
                 return;
             }

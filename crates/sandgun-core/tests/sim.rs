@@ -213,3 +213,30 @@ fn render_maps_material_palette_with_shade_jitter() {
     let e = (0 * 64 + 0) * 4;
     assert_eq!(&px[e..e + 4], &[26, 24, 32, 255]);
 }
+
+#[test]
+fn displaced_liquid_rises_at_most_one_cell_per_frame() {
+    // Packed column (walls to the floor): soil pillar directly on water, no empty space,
+    // so the only possible motion is soil displacing water upward. Without stamping the
+    // displaced liquid, a single water cell rides the bottom-up sweep cascade all the way
+    // to the top of the pillar in one frame (teleport). Correct: it rises one cell per frame.
+    let mut w = World::new(64, 64);
+    for y in 47..64 {
+        w.paint(9, y, 0, Material::Rock as u8);
+        w.paint(11, y, 0, Material::Rock as u8);
+    }
+    for y in 54..64 {
+        w.paint(10, y, 0, Material::Water as u8);
+    }
+    for y in 48..54 {
+        w.paint(10, y, 0, Material::Soil as u8);
+    }
+    let top_water = |w: &World| (0..64).find(|&y| w.get(10, y) == Material::Water).unwrap();
+    assert_eq!(top_water(&w), 54, "sanity: water starts at row 54");
+    w.step();
+    assert!(
+        top_water(&w) >= 53,
+        "displaced water must rise at most one cell per frame, not teleport (rose to row {})",
+        top_water(&w)
+    );
+}
