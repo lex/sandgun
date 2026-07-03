@@ -15,3 +15,12 @@ cargo test -p sandgun-core                                                    # 
 wasm-pack build crates/sandgun-wasm --release --target web --out-dir ../../web/src/pkg
 cd web && npm install && npm run dev                                          # http://localhost:5173
 ```
+
+## Debug controls (in the browser)
+
+- **Left-drag** — paint the selected material
+- **1 / 2 / 3 / 4** — select sand / water / oil / rock
+- **0** or **E** — eraser
+- **[** / **]** — brush radius down / up
+- **N** — regenerate a new world (random seed)
+- **D** — toggle debug overlay (active-chunk boxes, cells-processed count)
