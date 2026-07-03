@@ -1,0 +1,119 @@
+use sandgun_core::cell::Material;
+use sandgun_core::world::World;
+
+fn count(w: &World, m: Material) -> usize {
+    let mut n = 0;
+    for y in 0..w.height {
+        for x in 0..w.width {
+            if w.get(x, y) == m {
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
+#[test]
+fn mycelium_vein_burns_like_a_fuse() {
+    let mut w = World::new(128, 64);
+    for x in 30..=90 {
+        w.paint(x, 40, 0, Material::Rock as u8); // shelf
+        w.paint(x, 39, 0, Material::Mycelium as u8); // vein on the shelf
+    }
+    w.paint(29, 39, 0, Material::Fire as u8); // light the left end
+    // keep relighting the tip for a few frames so the probabilistic catch is certain
+    for _ in 0..8 {
+        w.paint(29, 39, 0, Material::Fire as u8);
+        w.step();
+    }
+    for _ in 0..3000 {
+        w.step();
+    }
+    assert_eq!(count(&w, Material::Mycelium), 0, "the whole vein must burn through");
+    assert!(count(&w, Material::Ash) > 20, "burnt mycelium leaves ash");
+    for _ in 0..600 {
+        w.step();
+    }
+    w.step();
+    assert_eq!(w.cells_processed, 0, "world must settle after the burn");
+}
+
+#[test]
+fn water_stops_a_fuse() {
+    let mut w = World::new(128, 64);
+    for x in 30..=90 {
+        w.paint(x, 40, 0, Material::Rock as u8);
+        w.paint(x, 39, 0, Material::Mycelium as u8);
+    }
+    // water block interrupting the vein, walled so it stays put
+    w.paint(60, 38, 0, Material::Rock as u8);
+    w.paint(62, 38, 0, Material::Rock as u8);
+    w.paint(61, 39, 0, Material::Water as u8);
+    w.paint(61, 38, 0, Material::Water as u8);
+    for _ in 0..8 {
+        w.paint(29, 39, 0, Material::Fire as u8);
+        w.step();
+    }
+    for _ in 0..3000 {
+        w.step();
+    }
+    let right_side: usize = (63..=90).filter(|&x| w.get(x, 39) == Material::Mycelium).count();
+    assert!(right_side > 20, "vein beyond the waterline must survive");
+}
+
+#[test]
+fn spore_gas_detonates_in_a_chain() {
+    let mut w = World::new(64, 64);
+    // sealed box full of spore gas
+    for x in 20..=40 {
+        w.paint(x, 20, 0, Material::Rock as u8);
+        w.paint(x, 32, 0, Material::Rock as u8);
+    }
+    for y in 20..=32 {
+        w.paint(20, y, 0, Material::Rock as u8);
+        w.paint(40, y, 0, Material::Rock as u8);
+    }
+    for x in 21..40 {
+        for y in 21..32 {
+            w.paint(x, y, 0, Material::SporeGas as u8);
+        }
+    }
+    let before = count(&w, Material::SporeGas);
+    assert!(before > 150);
+    w.paint(21, 31, 0, Material::Fire as u8); // one spark in the corner
+    for _ in 0..240 {
+        w.step();
+    }
+    assert_eq!(count(&w, Material::SporeGas), 0, "one spark must consume the whole pocket");
+}
+
+#[test]
+fn lone_fire_burns_out_and_settles() {
+    let mut w = World::new(64, 64);
+    w.paint(32, 32, 1, Material::Fire as u8);
+    for _ in 0..600 {
+        w.step();
+    }
+    assert_eq!(count(&w, Material::Fire), 0);
+    assert_eq!(count(&w, Material::Smoke), 0);
+    w.step();
+    assert_eq!(w.cells_processed, 0);
+}
+
+#[test]
+fn flammability_zero_param_prevents_ignition() {
+    let mut w = World::new(64, 64);
+    w.params.values[sandgun_core::params::P_FLAM_MYCELIUM] = 0.0;
+    for x in 20..=40 {
+        w.paint(x, 40, 0, Material::Rock as u8);
+        w.paint(x, 39, 0, Material::Mycelium as u8);
+    }
+    for _ in 0..8 {
+        w.paint(19, 39, 0, Material::Fire as u8);
+        w.step();
+    }
+    for _ in 0..1000 {
+        w.step();
+    }
+    assert_eq!(count(&w, Material::Mycelium), 21, "param at 0 must make mycelium fireproof");
+}

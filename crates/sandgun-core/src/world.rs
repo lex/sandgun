@@ -1,5 +1,5 @@
 use crate::cell::{Cell, Material, FLAG_BURNING};
-use crate::params::Params;
+use crate::params::{Params, P_FIRE_FLICKER, P_SMOKE_EMIT, P_SMOKE_LIFETIME};
 
 pub const CHUNK: usize = 64;
 pub const DISPERSION: isize = 4;
@@ -276,12 +276,97 @@ impl World {
         }
     }
 
-    fn update_burning(&mut self, _x: usize, _y: usize) {
-        // Task 3
+    fn update_burning(&mut self, x: usize, y: usize) {
+        let i = self.idx(x, y);
+        let mat = Material::from_u8(self.cells[i].material);
+        let (xi, yi) = (x as isize, y as isize);
+        // water above or beside extinguishes; water BELOW does not, so an oil
+        // slick floating on a pool keeps burning
+        for (nx, ny) in [(xi, yi - 1), (xi + 1, yi), (xi - 1, yi)] {
+            if self.material_at(nx, ny) == Material::Water {
+                self.cells[i].flags &= !FLAG_BURNING;
+                self.cells[i].aux = 0;
+                self.wake(x, y);
+                return;
+            }
+        }
+        if self.cells[i].aux == 0 {
+            // fuel spent: burn to the product material
+            let product = match mat {
+                Material::Mycelium | Material::MushroomFlesh => Material::Ash,
+                Material::SporeGas => Material::Fire, // the detonation flash
+                _ => Material::Empty,
+            };
+            let shade = (self.next_rand() & 3) as u8;
+            self.cells[i] = Cell::new(product, shade);
+            self.stamp[i] = self.frame_u8();
+            self.wake(x, y);
+            return;
+        }
+        self.cells[i].aux -= 1;
+        self.wake(x, y); // burning cells stay hot until spent
+        self.ignite_neighbors(x, y);
+        self.emit_smoke_above(x, y);
+        if mat.is_liquid() {
+            self.update_liquid(x, y, mat); // burning oil keeps flowing
+        }
     }
 
-    fn update_fire(&mut self, _x: usize, _y: usize) {
-        // Task 3
+    fn update_fire(&mut self, x: usize, y: usize) {
+        let i = self.idx(x, y);
+        if self.cells[i].aux == 0 {
+            self.cells[i] = Cell::default();
+            self.wake(x, y);
+            return;
+        }
+        self.cells[i].aux -= 1;
+        self.wake(x, y);
+        self.ignite_neighbors(x, y);
+        self.emit_smoke_above(x, y);
+        // flicker upward into empty space
+        if self.chance(self.params.values[P_FIRE_FLICKER]) {
+            let (xi, yi) = (x as isize, y as isize);
+            if self.material_at(xi, yi - 1) == Material::Empty {
+                self.swap_cells(x, y, x, y - 1);
+            }
+        }
+    }
+
+    fn ignite_neighbors(&mut self, x: usize, y: usize) {
+        let (xi, yi) = (x as isize, y as isize);
+        for (nx, ny) in [(xi, yi - 1), (xi + 1, yi), (xi, yi + 1), (xi - 1, yi)] {
+            if !self.in_bounds(nx, ny) {
+                continue;
+            }
+            let ni = self.idx(nx as usize, ny as usize);
+            if self.cells[ni].flags & FLAG_BURNING != 0 {
+                continue;
+            }
+            let nmat = Material::from_u8(self.cells[ni].material);
+            let p = self.params.flammability(nmat);
+            if p > 0.0 && self.chance(p) {
+                self.cells[ni].flags |= FLAG_BURNING;
+                self.cells[ni].aux = self.params.fuel(nmat);
+                self.wake(nx as usize, ny as usize);
+            }
+        }
+    }
+
+    fn emit_smoke_above(&mut self, x: usize, y: usize) {
+        if y == 0 {
+            return;
+        }
+        let above = self.idx(x, y - 1);
+        if Material::from_u8(self.cells[above].material) == Material::Empty
+            && self.chance(self.params.values[P_SMOKE_EMIT])
+        {
+            let shade = (self.next_rand() & 3) as u8;
+            let mut c = Cell::new(Material::Smoke, shade);
+            c.aux = self.params.values[P_SMOKE_LIFETIME].clamp(0.0, 255.0) as u8;
+            self.cells[above] = c;
+            self.stamp[above] = self.frame_u8();
+            self.wake(x, y - 1);
+        }
     }
 
     fn update_acid(&mut self, _x: usize, _y: usize) {
@@ -340,14 +425,20 @@ impl World {
 
     pub fn render_rgba(&mut self) {
         for (i, cell) in self.cells.iter().enumerate() {
+            let burning = cell.flags & FLAG_BURNING != 0;
             let mat = Material::from_u8(cell.material);
-            let [r, g, b] = mat.base_color();
-            // shade 0..3 -> jitter -9, -3, +3, +9; Empty stays flat
-            let j = if mat == Material::Empty { 0 } else { (cell.shade & 3) as i16 * 6 - 9 };
+            let (base, j) = if burning || mat == Material::Fire {
+                // animate between deep orange and yellow using the countdown for flicker
+                let hot = (cell.aux & 7) as i16 * 10;
+                ([255u8, (150 + hot.min(70)) as u8, 40u8], 0i16)
+            } else {
+                let j = if mat == Material::Empty { 0 } else { (cell.shade & 3) as i16 * 6 - 9 };
+                (mat.base_color(), j)
+            };
             let o = i * 4;
-            self.rgba[o] = (r as i16 + j).clamp(0, 255) as u8;
-            self.rgba[o + 1] = (g as i16 + j).clamp(0, 255) as u8;
-            self.rgba[o + 2] = (b as i16 + j).clamp(0, 255) as u8;
+            self.rgba[o] = (base[0] as i16 + j).clamp(0, 255) as u8;
+            self.rgba[o + 1] = (base[1] as i16 + j).clamp(0, 255) as u8;
+            self.rgba[o + 2] = (base[2] as i16 + j).clamp(0, 255) as u8;
             self.rgba[o + 3] = 255;
         }
     }
