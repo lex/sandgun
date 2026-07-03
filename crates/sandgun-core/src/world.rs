@@ -123,10 +123,19 @@ impl World {
         let ltr = self.frame % 2 == 0; // alternate sweep direction to avoid horizontal bias
 
         // Bottom-up: destination rows are processed before their sources.
+        // Only sweep x-spans of chunks that were woken last step.
         for y in (0..self.height).rev() {
-            for x_raw in 0..self.width {
-                let x = if ltr { x_raw } else { self.width - 1 - x_raw };
-                self.update_cell(x, y);
+            let crow = (y / CHUNK) * self.chunks_x;
+            for c_raw in 0..self.chunks_x {
+                let cx = if ltr { c_raw } else { self.chunks_x - 1 - c_raw };
+                if self.active[crow + cx] == 0 {
+                    continue;
+                }
+                let x0 = cx * CHUNK;
+                for i in 0..CHUNK {
+                    let x = if ltr { x0 + i } else { x0 + CHUNK - 1 - i };
+                    self.update_cell(x, y);
+                }
             }
         }
     }
@@ -204,5 +213,18 @@ impl World {
                 return;
             }
         }
+    }
+
+    pub fn active_ptr(&self) -> *const u8 {
+        self.active.as_ptr()
+    }
+    pub fn active_len(&self) -> usize {
+        self.active.len()
+    }
+    pub fn chunks_x(&self) -> usize {
+        self.chunks_x
+    }
+    pub fn chunks_y(&self) -> usize {
+        self.chunks_y
     }
 }

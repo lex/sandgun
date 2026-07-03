@@ -145,3 +145,31 @@ fn liquids_do_not_pass_through_rock() {
     let inside = (21..=23).any(|x| (45..=49).any(|y| w.get(x, y) == Material::Water));
     assert!(inside, "water must still be inside the rock cup");
 }
+
+#[test]
+fn settled_world_processes_zero_cells() {
+    let mut w = World::new(128, 128);
+    w.paint(64, 100, 4, Material::Sand as u8);
+    for _ in 0..300 {
+        w.step(); // more than enough to fully settle
+    }
+    w.step();
+    assert_eq!(w.cells_processed, 0, "settled chunks must be skipped entirely");
+}
+
+#[test]
+fn painting_wakes_a_settled_world() {
+    let mut w = World::new(128, 128);
+    w.paint(64, 100, 4, Material::Sand as u8);
+    for _ in 0..300 {
+        w.step();
+    }
+    w.paint(64, 20, 2, Material::Sand as u8);
+    w.step();
+    assert!(w.cells_processed > 0, "paint must wake its chunk");
+    for _ in 0..300 {
+        w.step();
+    }
+    w.step();
+    assert_eq!(w.cells_processed, 0, "and it must settle again");
+}
