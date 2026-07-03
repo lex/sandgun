@@ -807,21 +807,22 @@ fn acid_eats_through_a_sand_shelf() {
 
 #[test]
 fn acid_spends_its_charges_and_vanishes() {
+    // NOTE (amended after implementation feedback): acid that tunnels free and ends up
+    // isolated correctly RESTS as an inert puddle with unspent charges — charges bound
+    // activity, not existence. To test full spend, the acid must never run out of food:
+    // a deep full-width sand bed.
     let mut w = World::new(64, 64);
-    // acid sealed in a mycelium box: plenty to eat, nowhere to go
-    for x in 28..=36 {
-        for y in 28..=36 {
-            w.paint(x, y, 0, Material::Mycelium as u8);
+    for x in 0..64 {
+        for y in 40..64 {
+            w.paint(x, y, 0, Material::Sand as u8);
         }
     }
-    w.paint(32, 32, 1, Material::Acid as u8);
+    w.paint(32, 38, 1, Material::Acid as u8);
     for _ in 0..3000 {
         w.step();
     }
     let acid_left = (0..64).any(|x| (0..64).any(|y| w.get(x, y) == Material::Acid));
-    assert!(!acid_left, "every acid cell must eventually spend its charges");
-    w.step();
-    // may need to settle loose cells first
+    assert!(!acid_left, "every acid cell must spend its charges into the sand bed");
     for _ in 0..300 {
         w.step();
     }
