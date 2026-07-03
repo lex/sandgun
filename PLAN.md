@@ -5,8 +5,13 @@
 ## Vision (one sentence)
 
 A browser-based falling-sand playground where guns are physics events and the fun is
-**the world breaking apart** — chemistry (fire, acid, lava, cryo) is the trigger system,
-physicality is the payoff.
+**the world breaking apart — and growing back**: a living fungal cavern (mycelium networks,
+giant mushrooms, spore clouds) that responds to being shot. Chemistry is the trigger system,
+physicality is the payoff, the fungus is the world.
+
+> **2026-07-03 vision evolution:** see `docs/superpowers/specs/2026-07-03-mushroom-vision-design.md`
+> for the living-world design (fungal lifecycle, budgeted growth frontier, fire, M1 gun/ammo,
+> free-cursor player). Where that spec and the M1/M1.5 sections below disagree, the spec governs.
 
 ## What this project is (and is not)
 
