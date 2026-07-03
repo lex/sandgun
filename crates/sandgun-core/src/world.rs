@@ -227,4 +227,26 @@ impl World {
     pub fn chunks_y(&self) -> usize {
         self.chunks_y
     }
+
+    pub fn render_rgba(&mut self) {
+        for (i, cell) in self.cells.iter().enumerate() {
+            let mat = Material::from_u8(cell.material);
+            let [r, g, b] = mat.base_color();
+            // shade 0..3 -> jitter -9, -3, +3, +9; Empty stays flat
+            let j = if mat == Material::Empty { 0 } else { (cell.shade & 3) as i16 * 6 - 9 };
+            let o = i * 4;
+            self.rgba[o] = (r as i16 + j).clamp(0, 255) as u8;
+            self.rgba[o + 1] = (g as i16 + j).clamp(0, 255) as u8;
+            self.rgba[o + 2] = (b as i16 + j).clamp(0, 255) as u8;
+            self.rgba[o + 3] = 255;
+        }
+    }
+
+    pub fn rgba(&self) -> &[u8] {
+        &self.rgba
+    }
+
+    pub fn rgba_ptr(&self) -> *const u8 {
+        self.rgba.as_ptr()
+    }
 }

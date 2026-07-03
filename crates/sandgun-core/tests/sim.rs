@@ -173,3 +173,20 @@ fn painting_wakes_a_settled_world() {
     w.step();
     assert_eq!(w.cells_processed, 0, "and it must settle again");
 }
+
+#[test]
+fn render_maps_material_palette_with_shade_jitter() {
+    let mut w = World::new(64, 64);
+    w.paint(5, 5, 0, Material::Sand as u8);
+    w.render_rgba();
+    let px = w.rgba();
+    let o = (5 * 64 + 5) * 4;
+    // Sand base [216, 184, 108], shade jitter is at most ±9 per channel
+    assert!((px[o] as i16 - 216).abs() <= 9);
+    assert!((px[o + 1] as i16 - 184).abs() <= 9);
+    assert!((px[o + 2] as i16 - 108).abs() <= 9);
+    assert_eq!(px[o + 3], 255);
+    // empty cell renders the background color exactly
+    let e = (0 * 64 + 0) * 4;
+    assert_eq!(&px[e..e + 4], &[26, 24, 32, 255]);
+}
