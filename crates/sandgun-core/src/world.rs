@@ -1,5 +1,9 @@
 use crate::cell::{Cell, Material, FLAG_BURNING};
-use crate::params::{Params, P_ACID_ETCH, P_ACID_ETCH_ROCK, P_FIRE_FLICKER, P_FIRE_LIFETIME, P_SMOKE_EMIT, P_SMOKE_LIFETIME};
+use crate::params::{
+    Params, P_ACID_BLOB_RADIUS, P_ACID_ETCH, P_ACID_ETCH_ROCK, P_FIRE_FLICKER, P_FIRE_LIFETIME,
+    P_INCENDIARY_RADIUS, P_KINETIC_EJECTA, P_KINETIC_RADIUS, P_SMOKE_EMIT, P_SMOKE_LIFETIME,
+    P_SPORE_BLOB_RADIUS,
+};
 use crate::particle::Particle;
 use crate::projectile::{Ammo, Projectile};
 
@@ -257,8 +261,109 @@ impl World {
         self.projectiles = survivors;
     }
 
-    fn on_impact(&mut self, _cx: isize, _cy: isize, _ammo: Ammo) {
-        // Task 3 fills this in per ammo type.
+    fn on_impact(&mut self, cx: isize, cy: isize, ammo: Ammo) {
+        match ammo {
+            Ammo::Kinetic => {
+                let r = self.params.values[P_KINETIC_RADIUS] as isize;
+                let ej = self.params.values[P_KINETIC_EJECTA];
+                self.carve_crater(cx, cy, r, ej);
+            }
+            Ammo::Incendiary => {
+                let r = self.params.values[P_INCENDIARY_RADIUS] as isize;
+                self.carve_crater(cx, cy, (r - 1).max(1), 0.15);
+                self.ignite_blast(cx, cy, r);
+            }
+            Ammo::Acid => {
+                let r = self.params.values[P_ACID_BLOB_RADIUS] as isize;
+                self.inject_blob(cx, cy, r, Material::Acid);
+            }
+            Ammo::Spore => {
+                let r = self.params.values[P_SPORE_BLOB_RADIUS] as isize;
+                self.inject_blob(cx, cy, r, Material::Mycelium);
+                self.inject_blob(cx, cy - r, (r / 2).max(1), Material::SporeGas); // a puff above
+            }
+        }
+    }
+
+    fn carve_crater(&mut self, cx: isize, cy: isize, radius: isize, ejecta_frac: f32) {
+        for dy in -radius..=radius {
+            for dx in -radius..=radius {
+                if dx * dx + dy * dy > radius * radius {
+                    continue;
+                }
+                let (x, y) = (cx + dx, cy + dy);
+                if !self.in_bounds(x, y) {
+                    continue;
+                }
+                let m = self.material_at(x, y);
+                if m == Material::Empty || m == Material::Rock {
+                    continue; // rock resists kinetic rounds (keeps caves stable)
+                }
+                let (ux, uy) = (x as usize, y as usize);
+                let i = self.idx(ux, uy);
+                // throw a fraction of powders/solids outward as debris; clear the rest
+                if (m.is_powder() || m == Material::Mycelium || m == Material::MushroomFlesh)
+                    && self.chance(ejecta_frac)
+                {
+                    let ang = (self.next_rand() & 255) as f32 / 255.0 * std::f32::consts::TAU;
+                    let spd = 2.0 + (self.next_rand() & 63) as f32 / 32.0;
+                    let mat = self.cells[i].material;
+                    self.spawn_particle(x as f32 + 0.5, y as f32 + 0.5, ang.cos() * spd, ang.sin() * spd - 1.0, mat);
+                }
+                self.cells[i] = Cell::default();
+                self.wake(ux, uy);
+            }
+        }
+    }
+
+    fn ignite_blast(&mut self, cx: isize, cy: isize, radius: isize) {
+        for dy in -radius..=radius {
+            for dx in -radius..=radius {
+                if dx * dx + dy * dy > radius * radius {
+                    continue;
+                }
+                let (x, y) = (cx + dx, cy + dy);
+                if !self.in_bounds(x, y) {
+                    continue;
+                }
+                let (ux, uy) = (x as usize, y as usize);
+                let i = self.idx(ux, uy);
+                let m = Material::from_u8(self.cells[i].material);
+                if self.params.flammability(m) > 0.0 {
+                    self.cells[i].flags |= FLAG_BURNING;
+                    self.cells[i].aux = self.params.fuel(m);
+                    self.stamp[i] = self.frame_u8();
+                    self.wake(ux, uy);
+                } else if m == Material::Empty && self.chance(0.3) {
+                    self.cells[i] = Cell::new(Material::Fire, (self.next_rand() & 3) as u8);
+                    self.stamp[i] = self.frame_u8();
+                    self.wake(ux, uy);
+                }
+            }
+        }
+    }
+
+    fn inject_blob(&mut self, cx: isize, cy: isize, radius: isize, material: Material) {
+        for dy in -radius..=radius {
+            for dx in -radius..=radius {
+                if dx * dx + dy * dy > radius * radius {
+                    continue;
+                }
+                let (x, y) = (cx + dx, cy + dy);
+                if !self.in_bounds(x, y) {
+                    continue;
+                }
+                let (ux, uy) = (x as usize, y as usize);
+                let i = self.idx(ux, uy);
+                let dst = Material::from_u8(self.cells[i].material);
+                // fill empty; acid/spore also eat into soft organics/soil, not rock
+                let soft = matches!(dst, Material::Soil | Material::Sand | Material::Mycelium);
+                if dst == Material::Empty || soft {
+                    self.cells[i] = Cell::new(material, (self.next_rand() & 3) as u8);
+                    self.wake(ux, uy);
+                }
+            }
+        }
     }
 
     pub fn spawn_particle(&mut self, x: f32, y: f32, vx: f32, vy: f32, material: u8) {
