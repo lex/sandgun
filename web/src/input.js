@@ -12,6 +12,7 @@ export function attachInput(canvas, worldW, worldH) {
   const input = {
     down: false, x: 0, y: 0, px: null, py: null,
     material: M.SAND, radius: 4, debug: false, regen: false, reloadParams: false,
+    left: false, right: false, jump: false,
     get status() { return `${NAMES[this.material]} r${this.radius}`; },
   };
   const toWorld = (e) => {
@@ -19,17 +20,29 @@ export function attachInput(canvas, worldW, worldH) {
     input.x = Math.floor((e.clientX - r.left) / r.width * worldW);
     input.y = Math.floor((e.clientY - r.top) / r.height * worldH);
   };
-  canvas.addEventListener('pointerdown', (e) => { input.down = true; toWorld(e); });
+  canvas.addEventListener('pointerdown', (e) => { if (e.button === 2) { input.down = true; toWorld(e); } });
   window.addEventListener('pointerup', () => { input.down = false; input.px = input.py = null; });
   canvas.addEventListener('pointermove', toWorld);
+  canvas.addEventListener('contextmenu', (e) => e.preventDefault());
   window.addEventListener('keydown', (e) => {
     const k = e.key.toLowerCase();
     if (k in KEYS) input.material = KEYS[k];
     if (k === '[') input.radius = Math.max(1, input.radius - 1);
     if (k === ']') input.radius = Math.min(24, input.radius + 1);
-    if (k === 'd') input.debug = !input.debug;
-    if (k === 'n') input.regen = true;
-    if (k === 'p') input.reloadParams = true;
+    // guard with !e.repeat: 'd' now doubles as the right-move key, which is
+    // held down while walking and would otherwise spam-toggle the overlay
+    if (k === 'd' && !e.repeat) input.debug = !input.debug;
+    if (k === 'n' && !e.repeat) input.regen = true;
+    if (k === 'p' && !e.repeat) input.reloadParams = true;
+    if (k === 'a' || k === 'arrowleft') input.left = true;
+    if (k === 'd' || k === 'arrowright') input.right = true;
+    if (k === 'w' || k === 'arrowup' || k === ' ') input.jump = true;
+  });
+  window.addEventListener('keyup', (e) => {
+    const k = e.key.toLowerCase();
+    if (k === 'a' || k === 'arrowleft') input.left = false;
+    if (k === 'd' || k === 'arrowright') input.right = false;
+    if (k === 'w' || k === 'arrowup' || k === ' ') input.jump = false;
   });
   return input;
 }
