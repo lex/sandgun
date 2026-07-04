@@ -115,3 +115,11 @@ species (e.g. psilocybes) grow on wood too, not only bracket/shelf fungi. So the
 `MushroomKind` (shape/rules) is chosen semi-independently of substrate (soil vs wood vs wet
 wood), with substrate/moisture biasing WHICH kinds are likely and how fast — not a 1:1
 "wood ⇒ bracket only" mapping. Both normal mushrooms and brackets can be wood-borne.
+
+**Further refinement (Lex, 2026-07-04):** species should also drive different MYCELIUM and
+FLESH variants, not just cap shape — i.e. a `MushroomKind` colors/behaves its whole
+lifecycle (its mycelium network + its fruiting-body flesh look/props differ by species).
+Impl options given the u8 material set: (a) keep single Mycelium/MushroomFlesh material ids
+but store species in `shade` (render-only variation) or a few `aux` bits; (b) add distinct
+material ids per species (costs slots, simplest rules). Leaning (a) — species tag in shade,
+render picks palette, growth rules read the tag — avoids material-id explosion.
