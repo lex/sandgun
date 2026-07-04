@@ -1,3 +1,4 @@
+pub mod avatar;
 pub mod cell;
 pub mod params;
 pub mod particle;

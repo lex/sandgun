@@ -1,3 +1,4 @@
+use crate::avatar::Avatar;
 use crate::cell::{Cell, Material, FLAG_BURNING};
 use crate::params::{
     Params, P_ACID_BLOB_RADIUS, P_ACID_ETCH, P_ACID_ETCH_ROCK, P_FIRE_FLICKER, P_FIRE_LIFETIME,
@@ -12,6 +13,10 @@ pub const DISPERSION: isize = 4;
 pub const PARTICLE_GRAVITY: f32 = 0.35;
 const PARTICLE_MAX_SPEED: f32 = 8.0;
 const PROJECTILE_MAX_SPEED: f32 = 24.0;
+const AVATAR_GRAVITY: f32 = 0.3;
+const AVATAR_WALK: f32 = 1.4;
+const AVATAR_JUMP: f32 = 4.2;
+const AVATAR_MAX_FALL: f32 = 6.0;
 
 pub struct World {
     pub width: usize,
@@ -33,6 +38,7 @@ pub struct World {
     pub params: Params,
     pub(crate) particles: Vec<Particle>,
     pub(crate) projectiles: Vec<Projectile>,
+    pub(crate) avatar: Option<Avatar>,
 }
 
 impl World {
@@ -55,6 +61,7 @@ impl World {
             params: Params::default(),
             particles: Vec::new(),
             projectiles: Vec::new(),
+            avatar: None,
         }
     }
 
@@ -157,6 +164,104 @@ impl World {
         }
     }
 
+    pub fn spawn_avatar(&mut self, x: f32, y: f32) {
+        self.avatar = Some(Avatar {
+            x,
+            y,
+            vx: 0.0,
+            vy: 0.0,
+            w: 3,
+            h: 6,
+            on_ground: false,
+            want_left: false,
+            want_right: false,
+            want_jump: false,
+        });
+    }
+
+    pub fn set_avatar_input(&mut self, left: bool, right: bool, jump: bool) {
+        if let Some(a) = self.avatar.as_mut() {
+            a.want_left = left;
+            a.want_right = right;
+            a.want_jump = jump;
+        }
+    }
+
+    pub fn avatar_xywh(&self) -> Option<[f32; 4]> {
+        self.avatar.map(|a| [a.x, a.y, a.w as f32, a.h as f32])
+    }
+
+    pub fn avatar_center(&self) -> Option<[f32; 2]> {
+        self.avatar.map(|a| [a.x + a.w as f32 / 2.0, a.y + a.h as f32 / 2.0])
+    }
+
+    /// Would the AABB with top-left (ax, ay) overlap any blocking cell?
+    fn avatar_blocked(&self, ax: f32, ay: f32, w: i32, h: i32) -> bool {
+        let x0 = ax.floor() as isize;
+        let y0 = ay.floor() as isize;
+        for dy in 0..h {
+            for dx in 0..w {
+                let m = self.material_at(x0 + dx as isize, y0 + dy as isize);
+                if m.is_solid() || m.is_powder() {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    pub(crate) fn update_avatar(&mut self) {
+        let Some(mut a) = self.avatar.take() else { return };
+        // horizontal intent
+        a.vx = if a.want_left == a.want_right {
+            0.0
+        } else if a.want_right {
+            AVATAR_WALK
+        } else {
+            -AVATAR_WALK
+        };
+        // jump
+        if a.want_jump && a.on_ground {
+            a.vy = -AVATAR_JUMP;
+            a.on_ground = false;
+        }
+        // gravity
+        a.vy = (a.vy + AVATAR_GRAVITY).min(AVATAR_MAX_FALL);
+
+        // move X one pixel at a time
+        let mut moved = a.vx;
+        while moved.abs() >= 0.001 {
+            let step = moved.clamp(-1.0, 1.0);
+            if self.avatar_blocked(a.x + step, a.y, a.w, a.h) {
+                a.vx = 0.0;
+                break;
+            }
+            a.x += step;
+            moved -= step;
+        }
+
+        // move Y one pixel at a time
+        a.on_ground = false;
+        let mut moved = a.vy;
+        while moved.abs() >= 0.001 {
+            let step = moved.clamp(-1.0, 1.0);
+            if self.avatar_blocked(a.x, a.y + step, a.w, a.h) {
+                if step > 0.0 {
+                    a.on_ground = true;
+                }
+                a.vy = 0.0;
+                break;
+            }
+            a.y += step;
+            moved -= step;
+        }
+
+        // keep in-world horizontally; if it falls out the bottom, leave it (dead-ish) at the edge
+        let maxx = (self.width as i32 - a.w) as f32;
+        a.x = a.x.clamp(0.0, maxx.max(0.0));
+        self.avatar = Some(a);
+    }
+
     #[inline]
     pub(crate) fn frame_u8(&self) -> u8 {
         (self.frame & 0xFF) as u8
@@ -198,6 +303,7 @@ impl World {
         }
         self.update_projectiles();
         self.update_particles();
+        self.update_avatar();
     }
 
     pub fn fire(&mut self, x: f32, y: f32, vx: f32, vy: f32, ammo: u8) {
