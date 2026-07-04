@@ -923,6 +923,23 @@ impl World {
                 self.rgba[o + 3] = 255;
             }
         }
+
+        // stamp the avatar as a distinct sprite-ish block, after particles/projectiles
+        if let Some(a) = self.avatar {
+            let (x0, y0) = (a.x.floor() as isize, a.y.floor() as isize);
+            for dy in 0..a.h {
+                for dx in 0..a.w {
+                    let (cx, cy) = (x0 + dx as isize, y0 + dy as isize);
+                    if self.in_bounds(cx, cy) {
+                        let o = (cy as usize * self.width + cx as usize) * 4;
+                        self.rgba[o] = 90;
+                        self.rgba[o + 1] = 220;
+                        self.rgba[o + 2] = 240;
+                        self.rgba[o + 3] = 255;
+                    }
+                }
+            }
+        }
     }
 
     pub fn rgba(&self) -> &[u8] {

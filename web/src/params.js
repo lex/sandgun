@@ -4,6 +4,8 @@ const INDEX = {
   flam_oil: 4, flam_mycelium: 5, flam_flesh: 6, flam_sporegas: 7,
   fuel_oil: 8, fuel_mycelium: 9, fuel_flesh: 10, fuel_sporegas: 11,
   acid_etch: 12, acid_etch_rock: 13,
+  kinetic_radius: 14, kinetic_ejecta: 15, incendiary_radius: 16,
+  acid_blob_radius: 17, spore_blob_radius: 18,
 };
 
 export async function loadParams(world) {

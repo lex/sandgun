@@ -18,15 +18,20 @@ cd web && npm install && npm run dev # http://localhost:5173
 
 `scripts/build-wasm.sh` exists because Homebrew's `rust` can't cross-compile to wasm; it points `rustc`/`cargo` at the rustup stable toolchain (which has the `wasm32-unknown-unknown` target) while using `wasm-pack` from `~/.cargo/bin`. Rebuild after any change to `sandgun-core` or `sandgun-wasm`.
 
-## Debug controls (in the browser)
+## Controls (in the browser)
 
-Worlds are procedurally generated; painting is a debug tool.
+Worlds are procedurally generated; painting is a debug tool. You play a small
+avatar that walks, jumps, and fires a gun into the terrain.
 
-- **Left-drag** — paint the selected material
+- **A / D / ← / →** — walk left / right
+- **W / Space** — jump
+- **Z / X / C / V** — select ammo: kinetic / incendiary / acid / spore
+- **Left-click** (hold) — fire the gun at the cursor
+- **Right-drag** — paint the selected material (debug)
 - **1 / 2 / 3 / 4** — sand / water / oil / rock
 - **5 / 6 / 7 / 8 / 9** — soil / mycelium / mushroom flesh / spore gas / acid
 - **F** — fire &nbsp;•&nbsp; **0** or **E** — eraser
 - **[** / **]** — brush radius down / up
 - **N** — regenerate a new world (random seed)
-- **P** — hot-reload `web/public/params.json` (tune fire/acid without rebuilding)
+- **P** — hot-reload `web/public/params.json` (tune fire/acid/gun radii without rebuilding)
 - **`` ` ``** — toggle debug overlay (active-chunk boxes, cells-processed count)

@@ -33,7 +33,7 @@ function frame() {
   const now = performance.now();
   fps = fps * 0.95 + (1000 / Math.max(1, now - last)) * 0.05;
   last = now;
-  drawOverlay(octx, world, wasm, input, fps);
+  drawOverlay(octx, world, wasm, input, fps, gun);
   window.sandgun.fps = fps; // measurement hook (M0 task 9 acceptance)
   requestAnimationFrame(frame);
 }
