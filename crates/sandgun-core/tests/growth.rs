@@ -91,8 +91,10 @@ fn mycelium_bridges_a_small_gap_but_not_open_air() {
     // it reached across the notch (a cell in the former gap is now mycelium)
     let bridged = (30..33).any(|x| w.get(x, 40) == Material::Mycelium);
     assert!(bridged, "mycelium should bridge the small empty notch");
-    // but it did NOT grow far up into open air above the platform
-    assert_eq!(w.get(20, 30), Material::Empty, "must not sprawl into open air");
+    // but mycelium COLONIZATION did NOT sprawl far up into open air above the platform (a
+    // mushroom's stem legitimately growing straight up through open air, per the bounded
+    // fruiting window, is expected and is not what this assertion guards against).
+    assert_ne!(w.get(20, 30), Material::Mycelium, "mycelium colonization must not sprawl into open air");
 }
 
 #[test]
@@ -135,14 +137,31 @@ fn bridging_respects_max_reach() {
 
 #[test]
 fn undisturbed_mycelium_ages_toward_maturity() {
-    let mut w = soil_world();
-    w.paint(64, 90, 0, Material::Mycelium as u8);
+    // An isolated mycelium seed (colonizes its one Soil neighbor, then sits exhausted with
+    // permanent headroom) so its own aging is the only frontier activity. Using the full
+    // soil_world() band here would put this seed's aux progress at the mercy of the shared
+    // per-tick processing budget: with the bounded fruiting window (Fix 1), open soil-surface
+    // mycelium across the whole band now legitimately lingers for many ticks trying to fruit,
+    // which can dilute an unrelated cell's share of that budget to the point its aux barely
+    // moves within this test's step count -- an emergent (and correct) consequence of Fix 1,
+    // not something this test is meant to exercise.
+    let mut w = World::new(64, 64);
+    for x in 29..35 {
+        w.paint(x, 33, 0, Material::Rock as u8); // floor (wide enough to block diagonal avalanche)
+    }
+    w.paint(31, 32, 0, Material::Rock as u8); // left: sealed
+    w.paint(33, 32, 0, Material::Soil as u8); // right: the one-time colonizable neighbor
+    w.paint(34, 32, 0, Material::Rock as u8); // seals the far side of that neighbor
+    w.paint(33, 31, 0, Material::Rock as u8); // no headroom for that neighbor
+    w.paint(32, 32, 0, Material::Mycelium as u8); // origin; headroom above stays Empty
+    w.set_param(sandgun_core::params::P_MAX_REACH as u32, 0.0); // no bridging into the headroom shaft
+
     w.seed_frontier();
     for _ in 0..300 {
         w.step();
     }
     // the original seed has been alive the whole time -> its aux age climbed
-    assert!(w.cell_aux(64, 90) >= 90, "mature mycelium should have high aux age");
+    assert!(w.cell_aux(32, 32) >= 90, "mature mycelium should have high aux age");
 }
 
 #[test]
@@ -339,6 +358,165 @@ fn mushroom_cap_is_a_dome_not_a_ball() {
     let dome_reaches_apex = (34..=38)
         .any(|y| (dome_center - 5..=dome_center + 5).any(|x| w.get(x as usize, y) == Material::MushroomFlesh));
     assert!(dome_reaches_apex, "dome should curve upward above the stem top");
+}
+
+#[test]
+fn colony_reliably_fruits() {
+    // Regression: grow() used to retire an exhausted, mature, room-having frontier cell the
+    // instant it exhausted (aux >= maturity), which meant it got essentially ONE fruiting
+    // roll (default P_FRUIT_CHANCE = 0.02) before retiring for good -- whole colonies could
+    // (and empirically did, ~10% of the time) produce zero mushrooms. A cell that still has
+    // fruiting room should get a bounded but generous window of rolls (aux climbing from
+    // maturity up to the u8 ceiling of 255) before giving up.
+    //
+    // Setup: a single mycelium seed with exactly one Soil neighbor (so it enters the
+    // frontier) that gets colonized on the very first growth tick, after which the seed has
+    // no more colonizable neighbors (walled in by Rock on the other sides) but permanent
+    // empty headroom above it -- i.e. it becomes exhausted almost immediately while still
+    // being a perfectly viable fruiting candidate for the rest of the test.
+    let mut w = World::new(64, 64);
+    for x in 29..35 {
+        w.paint(x, 33, 0, Material::Rock as u8); // floor (wide enough to block diagonal avalanche)
+    }
+    w.paint(31, 32, 0, Material::Rock as u8); // left: sealed
+    w.paint(33, 32, 0, Material::Soil as u8); // right: the one-time colonizable neighbor
+    // Seal the far side + headroom of that neighbor so it can't itself cascade or fruit,
+    // keeping this test narrowly scoped to the origin cell's own fruiting window.
+    w.paint(34, 32, 0, Material::Rock as u8);
+    w.paint(33, 31, 0, Material::Rock as u8);
+    w.paint(32, 32, 0, Material::Mycelium as u8); // origin; headroom above (32,31..28) stays Empty
+
+    w.set_param(sandgun_core::params::P_MATURITY as u32, 20.0); // matures quickly
+    w.set_param(sandgun_core::params::P_FRUIT_CHANCE as u32, 0.02); // default-ish, low odds per roll
+    w.set_param(sandgun_core::params::P_MAX_REACH as u32, 0.0); // no bridging into the headroom shaft
+    w.set_param(sandgun_core::params::P_GROWTH_INTERVAL as u32, 1.0); // one growth tick per step
+
+    w.seed_frontier();
+    assert!(w.frontier_len() >= 1, "setup: origin should enter the frontier");
+
+    for _ in 0..300 {
+        w.step();
+    }
+
+    assert!(
+        w.mushroom_len() >= 1 || mushroom_flesh_exists(&w),
+        "a mature, room-having colony should reliably fruit within its aging window"
+    );
+}
+
+fn mushroom_flesh_exists(w: &World) -> bool {
+    for y in 0..w.height {
+        for x in 0..w.width {
+            if w.get(x, y) == Material::MushroomFlesh {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+#[test]
+fn fruited_cell_does_not_refruit_even_with_restored_room() {
+    // Regression guard for FLAG_FRUITED itself. `mycelium_cell_fruits_at_most_once` (below)
+    // is confounded: once a cell's own mushroom starts growing, its stem fills the exact
+    // headroom column `has_fruiting_room` checks, so the cell stops being a fruiting
+    // candidate (and, post bounded-window fix, retires) regardless of whether FLAG_FRUITED
+    // is ever consulted. That test would keep passing even if FLAG_FRUITED were deleted.
+    //
+    // This test isolates the flag by exploiting the fact that `aux` and cell flags live on
+    // the CELL, not on its (transient) frontier entry: once the origin fruits and its
+    // mushroom finishes growing, it retires from the frontier (either for lack of room, or
+    // -- with the bounded-window fix -- because it's already fruited). We then bulldoze the
+    // grown mushroom back to Empty (restoring headroom) and give the origin a fresh Soil
+    // neighbor, then call `seed_frontier()` again: it re-scans the world and re-enqueues any
+    // Mycelium cell with a colonizable neighbor WITHOUT touching aux/flags, so the origin
+    // goes back on the frontier still mature and still (if the fix is present) FLAG_FRUITED.
+    // Without that flag check, this re-entry would fruit a second time; with it, it must not.
+    let mut w = World::new(64, 64);
+    let (ox, oy) = (32i32, 32i32);
+    let nx = 33i32; // the one-time colonizable neighbor slot, reused for the re-seed later
+
+    for x in 29..35 {
+        w.paint(x, 33, 0, Material::Rock as u8); // floor (wide enough to block diagonal avalanche)
+    }
+    w.paint(31, 32, 0, Material::Rock as u8); // left: sealed
+    w.paint(nx, 32, 0, Material::Soil as u8); // right: the one-time colonizable neighbor
+    // Seal the far side + headroom of that neighbor so it can't itself cascade or fruit.
+    w.paint(34, 32, 0, Material::Rock as u8);
+    w.paint(nx, 31, 0, Material::Rock as u8);
+    w.paint(ox, oy, 0, Material::Mycelium as u8); // origin; headroom above stays Empty
+
+    w.set_param(sandgun_core::params::P_MATURITY as u32, 3.0);
+    w.set_param(sandgun_core::params::P_FRUIT_CHANCE as u32, 1.0); // deterministic: fruit the instant eligible
+    w.set_param(sandgun_core::params::P_MAX_MUSHROOMS as u32, 20.0);
+    w.set_param(sandgun_core::params::P_MAX_REACH as u32, 0.0); // no bridging into the headroom shaft
+    w.set_param(sandgun_core::params::P_GROWTH_INTERVAL as u32, 1.0);
+    w.set_param(sandgun_core::params::P_MUSH_HEIGHT_MIN as u32, 3.0);
+    w.set_param(sandgun_core::params::P_MUSH_HEIGHT_MAX as u32, 3.0);
+    w.set_param(sandgun_core::params::P_MUSH_CAP_MIN as u32, 2.0);
+    w.set_param(sandgun_core::params::P_MUSH_CAP_MAX as u32, 2.0);
+
+    w.seed_frontier();
+    assert!(w.frontier_len() >= 1, "setup: origin should enter the frontier");
+
+    let mut total_spawned: usize = 0;
+    let mut prev_len = w.mushroom_len();
+    for _ in 0..300 {
+        w.step();
+        let len = w.mushroom_len();
+        if len > prev_len {
+            total_spawned += len - prev_len;
+        }
+        prev_len = len;
+    }
+    assert_eq!(w.frontier_len(), 0, "setup: the colony should fully settle");
+    assert_eq!(w.mushroom_len(), 0, "setup: the mushroom should finish growing");
+    assert_eq!(total_spawned, 1, "setup: exactly one mushroom should have grown");
+    assert_ne!(
+        w.cell_flags(ox as usize, oy as usize) & sandgun_core::cell::FLAG_FRUITED,
+        0,
+        "setup: origin must carry FLAG_FRUITED after fruiting"
+    );
+
+    // Restore the origin's fruiting room: bulldoze the grown mushroom back to Empty, while
+    // the origin is still mature, unburned mycelium. Only actual MushroomFlesh cells are
+    // cleared (not the whole bounding box) so the neighbor's own headroom-blocking Rock seal
+    // survives -- otherwise that neighbor could gain real headroom and legitimately fruit on
+    // its own, confounding the total_spawned count this test relies on.
+    for dy in 1..=10i32 {
+        for dx in -6..=6i32 {
+            let (cx, cy) = ((ox + dx) as usize, (oy - dy) as usize);
+            if w.get(cx, cy) == Material::MushroomFlesh {
+                w.paint(cx as i32, cy as i32, 0, Material::Empty as u8);
+            }
+        }
+    }
+    assert_eq!(w.get(ox as usize, oy as usize), Material::Mycelium, "origin must remain mature mycelium after the carve");
+    assert_ne!(
+        w.cell_flags(ox as usize, oy as usize) & sandgun_core::cell::FLAG_FRUITED,
+        0,
+        "origin must still carry FLAG_FRUITED after the carve"
+    );
+
+    // Give the origin a fresh colonizable neighbor and re-seed it into the frontier.
+    // seed_frontier() only pushes a coordinate reference -- it never touches the cell's
+    // aux or flags, so origin re-enters still mature and still FLAG_FRUITED (if present).
+    w.paint(nx, oy, 0, Material::Soil as u8);
+    w.seed_frontier();
+    assert!(w.frontier_len() >= 1, "origin (with its fresh neighbor) should re-enter the frontier");
+
+    for _ in 0..300 {
+        w.step();
+        let len = w.mushroom_len();
+        if len > prev_len {
+            total_spawned += len - prev_len;
+        }
+        prev_len = len;
+    }
+    assert_eq!(
+        total_spawned, 1,
+        "a fruited cell with FLAG_FRUITED set must never re-fruit, even with restored room"
+    );
 }
 
 #[test]

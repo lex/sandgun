@@ -141,13 +141,20 @@ impl World {
             }
             let grew = self.colonize_from(i);
             // An exhausted cell (no more soil/empty to colonize) still loiters in the
-            // frontier until it reaches fruiting maturity, so isolated interior mycelium
-            // keeps aging after its immediate neighborhood is fully colonized. Once mature
-            // it retires for good (it has already had its fruiting roll for this tick).
+            // frontier, aging every tick, for as long as it remains a viable fruiting
+            // candidate: retiring the instant it turns mature would give it essentially ONE
+            // fruiting roll (at default P_FRUIT_CHANCE = 0.02, whole colonies could and did
+            // produce zero mushrooms). Instead it only retires once it can no longer usefully
+            // fruit -- already fruited, permanently out of room, or its age has saturated the
+            // u8 aux ceiling (255) after a long bounded window of rolls. aux is monotone
+            // (saturating_add, never reset while exhausted) so this is still a hard, bounded
+            // number of ticks: the frontier provably still drains to empty.
             if !self.has_colonizable_neighbor_or_bridge(fc.x, fc.y, fc.reach)
-                && self.cells[ci].aux >= maturity
+                && (self.cells[ci].flags & FLAG_FRUITED != 0
+                    || !self.has_fruiting_room(fc.x, fc.y)
+                    || self.cells[ci].aux == u8::MAX)
             {
-                self.frontier.swap_remove(i); // exhausted and mature -> retire
+                self.frontier.swap_remove(i); // exhausted and can no longer usefully fruit -> retire
             } else {
                 i += 1;
             }
@@ -243,7 +250,7 @@ impl World {
 
     /// Reveal up to `n` cells of mushroom `i`. Returns true when fully grown.
     /// Layout: cells [0, height) are the stem column going up from base_y-1;
-    /// cells [height, height + cap_area) are the cap disk around the stem top.
+    /// cells [height, height + cap_area) are the cap dome around the stem top.
     fn reveal_mushroom(&mut self, i: usize, n: u16) -> bool {
         let m = self.mushrooms[i];
         let stem = m.height as u16;
