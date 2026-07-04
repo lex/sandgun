@@ -259,3 +259,12 @@ This is a redesign of M1c's core growth. Should get its OWN grilling session bef
 it interacts with fruiting, drop/connectivity, ash-nutrient, color, and performance/chunk-sleep
 (strand tips are few = cheap; a nutrient field is a new per-cell/region quantity to budget).
 Candidate name: "M1e — Living Mycelium (hyphal network + nutrient economy)".
+
+## Water seeps into soil → nutritious substrate (esp. with ash) (Lex, 2026-07-04)
+Water should soak into adjacent soil (moisture), and moist soil — especially moist soil that
+also contains/neighbors ASH — becomes highly nutritious substrate that mycelium grows faster in
+/ draws more nutrients from. Unifies the earlier MOISTURE idea + ASH-as-nutrient + the nutrient
+economy: substrate richness = f(moisture, ash). Store moisture (and maybe nutrient level) in the
+soil cell's aux; water contact raises moisture; ash raises nutrient value; mycelium consumption
+draws it down. Feeds the organism/strand model's food-seeking. Part of the "Living Mycelium"
+redesign cluster.
