@@ -231,3 +231,33 @@ fn reseed_consumes_spore_without_gas_rewake() {
         "the adjacent soil should become the new mycelium seed"
     );
 }
+
+#[test]
+fn shooting_mushroom_flesh_releases_spores() {
+    let mut w = World::new(64, 64);
+    // a slab of mushroom flesh
+    for x in 28..36 {
+        for y in 28..36 {
+            w.paint(x, y, 0, Material::MushroomFlesh as u8);
+        }
+    }
+    let spores_before = spore_count(&w);
+    // fire a kinetic round into the slab
+    w.fire(5.0, 32.0, 12.0, 0.0, 0); // Kinetic = 0
+    for _ in 0..30 {
+        w.step();
+    }
+    assert!(spore_count(&w) > spores_before, "popping mushroom flesh should release spore gas");
+}
+
+fn spore_count(w: &World) -> usize {
+    let mut n = 0;
+    for y in 0..w.height {
+        for x in 0..w.width {
+            if w.get(x, y) == Material::SporeGas {
+                n += 1;
+            }
+        }
+    }
+    n
+}

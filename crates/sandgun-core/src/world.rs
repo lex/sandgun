@@ -459,6 +459,14 @@ impl World {
                     let mat = self.cells[i].material;
                     self.spawn_particle(x as f32 + 0.5, y as f32 + 0.5, ang.cos() * spd, ang.sin() * spd - 1.0, mat);
                 }
+                if m == Material::MushroomFlesh
+                    && self.chance((self.params.values[crate::params::P_PUFF_SPORES] / 8.0).min(1.0))
+                {
+                    self.cells[i].material = Material::SporeGas as u8;
+                    self.cells[i].aux = Material::SporeGas.initial_aux();
+                    self.wake(ux, uy);
+                    continue; // leave spore gas instead of empty this cell
+                }
                 self.cells[i] = Cell::default();
                 self.wake(ux, uy);
             }
