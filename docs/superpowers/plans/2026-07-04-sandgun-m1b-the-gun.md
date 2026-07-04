@@ -44,9 +44,9 @@ use sandgun_core::world::World;
 #[test]
 fn particle_falls_and_settles_on_the_floor() {
     let mut w = World::new(64, 64);
-    // rock floor at y=60
+    // rock floor at y=60 (Rock is static — a Sand floor would sink and break the test)
     for x in 0..64 {
-        w.paint(x, 60, 0, Material::Sand as u8);
+        w.paint(x, 60, 0, Material::Rock as u8);
     }
     w.spawn_particle(10.0, 5.0, 0.0, 0.0, Material::Sand as u8);
     assert_eq!(w.particle_count(), 1);
@@ -54,7 +54,7 @@ fn particle_falls_and_settles_on_the_floor() {
         w.step();
     }
     assert_eq!(w.particle_count(), 0, "particle must resettle, not fly forever");
-    // it should have become a grid cell resting on the floor (row 59, just above the sand)
+    // it should have become a grid cell resting on the floor (row 59, just above the rock)
     assert_eq!(w.get(10, 59), Material::Sand, "particle resettled onto the floor");
 }
 
@@ -759,18 +759,291 @@ git add -A && git commit -m "feat: wasm fire() + render projectiles and particle
 
 ---
 
-### Task 5: Aim, fire, and ammo-select input
+### Task 5: Walking avatar — gravity and terrain collision
+
+> **Added 2026-07-04 (user decision):** M1b gets a walking avatar (chosen over the fixed
+> muzzle). Scoped tight: an AABB box-collider with gravity, per-axis sub-stepped collision
+> against solid/powder terrain, walk + jump. No slopes, no step-up, no sand-pushes-avatar.
 
 **Files:**
-- Create: `web/src/gun.js`
-- Modify: `web/src/input.js` (track cursor for aim; right-mouse or a fire key; ammo keys; expose to main)
-- Modify: `web/src/main.js` (wire the gun; fire from a muzzle point toward the cursor)
+- Create: `crates/sandgun-core/src/avatar.rs`
+- Modify: `crates/sandgun-core/src/lib.rs` (add `pub mod avatar;`)
+- Modify: `crates/sandgun-core/src/world.rs` (add `avatar` field; `spawn_avatar`; `set_avatar_input`; `update_avatar` called in `step`; accessors)
+- Create: `crates/sandgun-core/tests/avatar.rs`
 
 **Interfaces:**
-- Consumes: `WasmWorld::fire`, existing input/camera-less coordinate mapping (canvas → world cell, already in input.js).
-- Produces: `attachGun(canvas, worldW, worldH) -> gun` and `applyGun(gun, world)` (call once per frame in `frame()`). Firing model: the muzzle is fixed at bottom-center of the world for M1b (no avatar); on fire, compute the unit vector from muzzle to the cursor world-position, multiply by `GUN_SPEED` (≈10), and `world.fire(muzzleX, muzzleY, vx, vy, ammo)`. Fire on **left-click while a modifier is NOT held** would clash with paint — so gun fire is **right-click** (`contextmenu` prevented) or holding **Space + left-click**; ammo select keys `Z/X/C/V` = kinetic/incendiary/acid/spore; fire rate limited to one shot per ~6 frames while held. `gun.status` string ("ammo: incendiary") for the overlay. Paint (left-drag) stays as the debug tool.
+- Consumes: `World` grid/`material_at`/`in_bounds`, `Material` class helpers.
+- Produces: `avatar::Avatar { x: f32, y: f32, vx: f32, vy: f32, w: i32, h: i32, on_ground: bool, want_left: bool, want_right: bool, want_jump: bool }` (position is the AABB top-left, in world coords); `World.avatar: Option<Avatar>` (pub(crate)); `World::spawn_avatar(x, y)` (w=3, h=6); `World::set_avatar_input(left, right, jump)`; `World::update_avatar()` — applies walk velocity from input, gravity, a jump impulse when `on_ground`, then moves per-axis one pixel at a time, stopping (and zeroing that axis' velocity) when the AABB would overlap a blocking cell (`is_solid() || is_powder()`; liquids/gas passable); sets `on_ground` when a downward move is blocked. Called from `step()` AFTER the cell sweep and projectile/particle updates (so the avatar reacts to the terrain's current state). Accessors: `avatar_xywh() -> Option<[f32;4]>` (x,y,w,h for render + JS muzzle), `avatar_center() -> Option<[f32;2]>`. The avatar reads cells but writes none, so it never adds to `cells_processed` — chunk sleeping is unaffected.
 
-- [ ] **Step 1: Implement the gun input**
+- [ ] **Step 1: Write the failing tests**
+
+`crates/sandgun-core/tests/avatar.rs`:
+```rust
+use sandgun_core::cell::Material;
+use sandgun_core::world::World;
+
+#[test]
+fn avatar_falls_and_rests_on_the_floor() {
+    let mut w = World::new(64, 64);
+    for x in 0..64 {
+        w.paint(x, 50, 0, Material::Rock as u8); // floor at y=50
+    }
+    w.spawn_avatar(30.0, 5.0);
+    for _ in 0..300 {
+        w.step();
+    }
+    let [_, y, _, h] = w.avatar_xywh().unwrap();
+    assert!((y + h - 50.0).abs() <= 1.5, "avatar's feet should rest on the floor (y+h≈50, got {})", y + h);
+    let av = w.avatar_center().unwrap();
+    assert!(av[1] < 50.0, "avatar is above the floor, not through it");
+}
+
+#[test]
+fn avatar_is_blocked_by_a_wall() {
+    let mut w = World::new(64, 64);
+    for x in 0..64 {
+        w.paint(x, 50, 0, Material::Rock as u8); // floor
+    }
+    for y in 40..50 {
+        w.paint(40, y, 0, Material::Rock as u8); // wall at x=40
+    }
+    w.spawn_avatar(30.0, 44.0);
+    w.set_avatar_input(false, true, false); // walk right into the wall
+    for _ in 0..300 {
+        w.step();
+    }
+    let [x, _, aw, _] = w.avatar_xywh().unwrap();
+    assert!(x + aw <= 40.5, "avatar must not pass through the wall (right edge {} vs wall x=40)", x + aw);
+}
+
+#[test]
+fn avatar_falls_when_the_ground_is_carved_away() {
+    let mut w = World::new(64, 64);
+    for x in 0..64 {
+        w.paint(x, 40, 0, Material::Rock as u8); // upper floor
+        w.paint(x, 60, 0, Material::Rock as u8); // lower floor
+    }
+    w.spawn_avatar(30.0, 34.0);
+    for _ in 0..120 {
+        w.step();
+    }
+    let resting_y = w.avatar_xywh().unwrap()[1];
+    // carve the floor out from under it
+    for x in 25..40 {
+        w.paint(x, 40, 0, Material::Empty as u8);
+    }
+    for _ in 0..300 {
+        w.step();
+    }
+    let fallen_y = w.avatar_xywh().unwrap()[1];
+    assert!(fallen_y > resting_y + 10.0, "avatar must fall after its ground is carved ({resting_y} -> {fallen_y})");
+}
+
+#[test]
+fn avatar_can_jump_off_the_ground() {
+    let mut w = World::new(64, 64);
+    for x in 0..64 {
+        w.paint(x, 50, 0, Material::Rock as u8);
+    }
+    w.spawn_avatar(30.0, 44.0);
+    for _ in 0..120 {
+        w.step(); // settle onto the floor
+    }
+    let grounded_y = w.avatar_xywh().unwrap()[1];
+    w.set_avatar_input(false, false, true); // jump
+    w.step();
+    w.set_avatar_input(false, false, false);
+    let mut min_y = grounded_y;
+    for _ in 0..30 {
+        w.step();
+        min_y = min_y.min(w.avatar_xywh().unwrap()[1]);
+    }
+    assert!(min_y < grounded_y - 3.0, "jump must lift the avatar off the floor ({grounded_y} -> {min_y})");
+}
+
+#[test]
+fn avatar_does_not_add_sim_work_when_resting() {
+    let mut w = World::new(64, 64);
+    for x in 0..64 {
+        w.paint(x, 50, 0, Material::Rock as u8);
+    }
+    w.spawn_avatar(30.0, 44.0);
+    for _ in 0..300 {
+        w.step();
+    }
+    w.step();
+    assert_eq!(w.cells_processed, 0, "a resting avatar writes no cells and keeps the world asleep");
+}
+```
+
+- [ ] **Step 2: Run to verify they fail**
+
+Run: `cargo test -p sandgun-core --test avatar`
+Expected: FAIL — `avatar` module / `spawn_avatar` don't exist.
+
+- [ ] **Step 3: Implement the avatar**
+
+`crates/sandgun-core/src/avatar.rs`:
+```rust
+#[derive(Clone, Copy)]
+pub struct Avatar {
+    pub x: f32,
+    pub y: f32,
+    pub vx: f32,
+    pub vy: f32,
+    pub w: i32,
+    pub h: i32,
+    pub on_ground: bool,
+    pub want_left: bool,
+    pub want_right: bool,
+    pub want_jump: bool,
+}
+```
+
+`crates/sandgun-core/src/lib.rs`: add `pub mod avatar;`.
+
+In `crates/sandgun-core/src/world.rs`:
+- import: `use crate::avatar::Avatar;`
+- constants: `const AVATAR_GRAVITY: f32 = 0.3; const AVATAR_WALK: f32 = 1.4; const AVATAR_JUMP: f32 = 4.2; const AVATAR_MAX_FALL: f32 = 6.0;`
+- field: `pub(crate) avatar: Option<Avatar>,` init `avatar: None,`.
+- methods:
+```rust
+pub fn spawn_avatar(&mut self, x: f32, y: f32) {
+    self.avatar = Some(Avatar {
+        x, y, vx: 0.0, vy: 0.0, w: 3, h: 6,
+        on_ground: false, want_left: false, want_right: false, want_jump: false,
+    });
+}
+
+pub fn set_avatar_input(&mut self, left: bool, right: bool, jump: bool) {
+    if let Some(a) = self.avatar.as_mut() {
+        a.want_left = left;
+        a.want_right = right;
+        a.want_jump = jump;
+    }
+}
+
+pub fn avatar_xywh(&self) -> Option<[f32; 4]> {
+    self.avatar.map(|a| [a.x, a.y, a.w as f32, a.h as f32])
+}
+
+pub fn avatar_center(&self) -> Option<[f32; 2]> {
+    self.avatar.map(|a| [a.x + a.w as f32 / 2.0, a.y + a.h as f32 / 2.0])
+}
+
+/// Would the AABB with top-left (ax, ay) overlap any blocking cell?
+fn avatar_blocked(&self, ax: f32, ay: f32, w: i32, h: i32) -> bool {
+    let x0 = ax.floor() as isize;
+    let y0 = ay.floor() as isize;
+    for dy in 0..h {
+        for dx in 0..w {
+            let m = self.material_at(x0 + dx as isize, y0 + dy as isize);
+            if m.is_solid() || m.is_powder() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+pub(crate) fn update_avatar(&mut self) {
+    let Some(mut a) = self.avatar.take() else { return };
+    // horizontal intent
+    a.vx = if a.want_left == a.want_right {
+        0.0
+    } else if a.want_right {
+        AVATAR_WALK
+    } else {
+        -AVATAR_WALK
+    };
+    // jump
+    if a.want_jump && a.on_ground {
+        a.vy = -AVATAR_JUMP;
+        a.on_ground = false;
+    }
+    // gravity
+    a.vy = (a.vy + AVATAR_GRAVITY).min(AVATAR_MAX_FALL);
+
+    // move X one pixel at a time
+    let mut moved = a.vx;
+    while moved.abs() >= 0.001 {
+        let step = moved.clamp(-1.0, 1.0);
+        if self.avatar_blocked(a.x + step, a.y, a.w, a.h) {
+            a.vx = 0.0;
+            break;
+        }
+        a.x += step;
+        moved -= step;
+    }
+
+    // move Y one pixel at a time
+    a.on_ground = false;
+    let mut moved = a.vy;
+    while moved.abs() >= 0.001 {
+        let step = moved.clamp(-1.0, 1.0);
+        if self.avatar_blocked(a.x, a.y + step, a.w, a.h) {
+            if step > 0.0 {
+                a.on_ground = true;
+            }
+            a.vy = 0.0;
+            break;
+        }
+        a.y += step;
+        moved -= step;
+    }
+
+    // keep in-world horizontally; if it falls out the bottom, leave it (dead-ish) at the edge
+    let maxx = (self.width as i32 - a.w) as f32;
+    a.x = a.x.clamp(0.0, maxx.max(0.0));
+    self.avatar = Some(a);
+}
+```
+- in `step()`, add AFTER `self.update_particles();`: `self.update_avatar();`
+
+- [ ] **Step 4: Run the FULL suite**
+
+Run: `cargo test -p sandgun-core`
+Expected: all pass (+5). If `avatar_falls_and_rests_on_the_floor` overshoots, check the per-axis one-pixel sub-stepping stops BEFORE entering the blocked cell (test the tentative position, only commit the step if clear).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add -A && git commit -m "feat: walking avatar — gravity + terrain collision (M1b task 5)"
+```
+
+---
+
+### Task 6: WASM avatar surface + aim/fire/move input
+
+**Files:**
+- Modify: `crates/sandgun-wasm/src/lib.rs` (avatar passthroughs)
+- Create: `web/src/gun.js`
+- Modify: `web/src/input.js` (avatar movement keys; expose)
+- Modify: `web/src/main.js` (spawn avatar, wire movement + gun, fire from the avatar)
+
+**Interfaces:**
+- Consumes: `WasmWorld::fire` (Task 4), the new avatar core API, canvas→world mapping (input.js).
+- Produces: `WasmWorld::{spawn_avatar(x,y), set_avatar_input(left,right,jump), avatar_xywh()->Option<Vec<f32>>, avatar_center()->Option<Vec<f32>>}`; `attachGun(canvas, worldW, worldH) -> gun` + `applyGun(gun, world)`. Controls: **A/D or ←/→** walk, **W/↑/Space** jump (avatar); **mouse** aims; **left-click held while over the canvas fires** the gun from the avatar's center toward the cursor — but left-drag currently paints, so gun fire is bound to **left-click** and the debug paintbrush moves to **right-click-drag** (swap the two in input.js; update the README/overlay accordingly in Task 7). Ammo select: `Z/X/C/V` = kinetic/incendiary/acid/spore. Fire rate: one shot per ~6 frames while held. Muzzle = `world.avatar_center()`; if there's no avatar, don't fire. `gun.status` → "gun: incendiary".
+
+Note: `avatar_xywh`/`avatar_center` return `Option<Vec<f32>>` across wasm-bindgen (returns `undefined` in JS when `None`); guard for `undefined` in JS.
+
+- [ ] **Step 1: Implement wasm passthroughs + JS**
+
+Add to `crates/sandgun-wasm/src/lib.rs` inside `impl WasmWorld`:
+```rust
+pub fn spawn_avatar(&mut self, x: f32, y: f32) {
+    self.inner.spawn_avatar(x, y);
+}
+pub fn set_avatar_input(&mut self, left: bool, right: bool, jump: bool) {
+    self.inner.set_avatar_input(left, right, jump);
+}
+pub fn avatar_xywh(&self) -> Option<Vec<f32>> {
+    self.inner.avatar_xywh().map(|a| a.to_vec())
+}
+pub fn avatar_center(&self) -> Option<Vec<f32>> {
+    self.inner.avatar_center().map(|a| a.to_vec())
+}
+```
 
 `web/src/gun.js`:
 ```js
@@ -782,7 +1055,6 @@ const FIRE_COOLDOWN = 6; // frames
 export function attachGun(canvas, worldW, worldH) {
   const gun = {
     ammo: 0, aimX: worldW / 2, aimY: 0, firing: false, cooldown: 0,
-    muzzleX: worldW / 2, muzzleY: worldH - 2,
     get status() { return `gun: ${AMMO_NAMES[this.ammo]}`; },
   };
   const toWorld = (e) => {
@@ -791,9 +1063,8 @@ export function attachGun(canvas, worldW, worldH) {
     gun.aimY = (e.clientY - r.top) / r.height * worldH;
   };
   canvas.addEventListener('mousemove', toWorld);
-  canvas.addEventListener('contextmenu', (e) => e.preventDefault());
-  canvas.addEventListener('mousedown', (e) => { if (e.button === 2) { gun.firing = true; toWorld(e); } });
-  window.addEventListener('mouseup', (e) => { if (e.button === 2) gun.firing = false; });
+  canvas.addEventListener('mousedown', (e) => { if (e.button === 0) { gun.firing = true; toWorld(e); } });
+  window.addEventListener('mouseup', (e) => { if (e.button === 0) gun.firing = false; });
   window.addEventListener('keydown', (e) => {
     const k = e.key.toLowerCase();
     if (k in AMMO) gun.ammo = AMMO[k];
@@ -804,50 +1075,77 @@ export function attachGun(canvas, worldW, worldH) {
 export function applyGun(gun, world) {
   if (gun.cooldown > 0) gun.cooldown--;
   if (!gun.firing || gun.cooldown > 0) return;
-  const dx = gun.aimX - gun.muzzleX;
-  const dy = gun.aimY - gun.muzzleY;
+  const c = world.avatar_center();
+  if (!c) return; // no avatar, no muzzle
+  const [mx, my] = c;
+  const dx = gun.aimX - mx;
+  const dy = gun.aimY - my;
   const len = Math.hypot(dx, dy) || 1;
-  const vx = (dx / len) * GUN_SPEED;
-  const vy = (dy / len) * GUN_SPEED;
-  world.fire(gun.muzzleX, gun.muzzleY, vx, vy, gun.ammo);
+  world.fire(mx, my, (dx / len) * GUN_SPEED, (dy / len) * GUN_SPEED, gun.ammo);
   gun.cooldown = FIRE_COOLDOWN;
 }
 ```
 
+In `web/src/input.js`, add avatar-movement tracking to the `input` object (a `move` set): track W/A/S/D + arrows + Space as held keys, and swap the paint button to **right-click** (so left-click is free for the gun). Add to the input object: `left:false, right:false, jump:false`, update them on keydown/keyup for `a`/`arrowleft`, `d`/`arrowright`, `w`/`arrowup`/` `. Change the paint pointerdown guard to fire only on `e.button === 2` (right button), and add `canvas.addEventListener('contextmenu', e => e.preventDefault())`.
+
 In `web/src/main.js`:
 ```js
 import { attachGun, applyGun } from './gun.js';
+// after world.generate(...):
+world.spawn_avatar(W / 2, 4);
 // after attachInput:
 const gun = attachGun(document.getElementById('view'), W, H);
-// inside frame(), after applyInput(...):
+// inside frame(), before world.step():
+world.set_avatar_input(input.left, input.right, input.jump);
 applyGun(gun, world);
 ```
 
 - [ ] **Step 2: Verify in the browser (Playwright)**
 
-`./scripts/build-wasm.sh`, start the dev server. Right-click-drag to fire toward the cursor. Expected: tracer pixels fly from bottom-center toward the cursor; kinetic (`Z`) blasts craters in dirt/mushrooms and throws debris that arcs and lands; incendiary (`X`) sets fires (and lights mycelium veins → fuses from M1a); acid (`C`) leaves green acid that eats terrain; spore (`V`) plants violet mycelium. Rock resists kinetic craters. Left-drag still paints (debug). Verify no console errors.
+`./scripts/build-wasm.sh`, dev server. Expected: a small avatar spawns and falls onto the terrain; A/D walk it, W/Space jumps; it's stopped by walls and rides on top of dirt/mushrooms; left-click fires the selected ammo from the avatar toward the cursor (tracer flies, craters/fire/acid/mycelium land on impact); if you carve the ground from under it (fire an acid/kinetic round at its feet) it falls. Right-drag still paints (debug). No console errors.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add -A && git commit -m "feat: aim/fire/ammo-select gun input (M1b task 5)"
+git add -A && git commit -m "feat: avatar wasm surface + move/aim/fire input (M1b task 6)"
 ```
 
 ---
 
-### Task 6: Gun params in the hot-reload pipeline + M1b acceptance
+### Task 7: Avatar render + gun params hot-reload + M1b acceptance
 
 **Files:**
-- Modify: `web/public/params.json` (add the 5 payload params)
-- Modify: `web/src/params.js` (extend INDEX map)
-- Modify: `web/src/overlay.js` (show `gun.status`)
-- Modify: `web/src/main.js` (pass gun status to overlay)
+- Modify: `crates/sandgun-core/src/world.rs` (stamp the avatar in `render_rgba`)
+- Modify: `web/public/params.json`, `web/src/params.js` (5 payload params)
+- Modify: `web/src/overlay.js` + `web/src/main.js` (HUD shows ammo)
+- Modify: `README.md` (update controls: gun on left-click, paint on right-click, avatar keys)
 
 **Interfaces:**
-- Consumes: Task 3 params, Task 5 gun, the M1a hot-reload pipeline.
-- Produces: the 5 payload params are hot-reloadable (`P` key); the overlay shows current ammo; M1b is playable and accepted.
+- Consumes: everything above.
+- Produces: the avatar drawn as a distinct sprite-ish block in the buffer; payload params hot-reloadable (`P`); ammo in the HUD; README current; M1b accepted.
 
-- [ ] **Step 1: Extend the params pipeline**
+- [ ] **Step 1: Render the avatar**
+
+At the end of `render_rgba` in `crates/sandgun-core/src/world.rs` (after particles/projectiles), add:
+```rust
+    if let Some(a) = self.avatar {
+        let (x0, y0) = (a.x.floor() as isize, a.y.floor() as isize);
+        for dy in 0..a.h {
+            for dx in 0..a.w {
+                let (cx, cy) = (x0 + dx as isize, y0 + dy as isize);
+                if self.in_bounds(cx, cy) {
+                    let o = (cy as usize * self.width + cx as usize) * 4;
+                    self.rgba[o] = 90;
+                    self.rgba[o + 1] = 220;
+                    self.rgba[o + 2] = 240;
+                    self.rgba[o + 3] = 255;
+                }
+            }
+        }
+    }
+```
+
+- [ ] **Step 2: Extend the params pipeline**
 
 Add to `web/public/params.json`:
 ```json
@@ -862,29 +1160,31 @@ Add to the `INDEX` map in `web/src/params.js`:
   kinetic_radius: 14, kinetic_ejecta: 15, incendiary_radius: 16,
   acid_blob_radius: 17, spore_blob_radius: 18,
 ```
-In `web/src/overlay.js`, append the gun status to the HUD line (pass `gun` into `drawOverlay` from `main.js` and add `· ${gun.status}` to the text).
+In `web/src/overlay.js`, append `· ${gun.status}` to the HUD line (pass `gun` into `drawOverlay` from `main.js`). Update `README.md`'s controls: **left-click** fires, **right-drag** paints (debug), **A/D/←/→** walk, **W/Space** jump, **Z/X/C/V** ammo.
 
-- [ ] **Step 2: Rebuild + browser acceptance (the grin test)**
+- [ ] **Step 3: Rebuild + browser acceptance (the grin test)**
 
 `./scripts/build-wasm.sh`, dev server. Run the M1b acceptance with Playwright + eyeballs:
-- Fire each ammo at the fungal world; confirm the four distinct terrain-verbs (crater+debris / fire+fuses / acid melt / mycelium plant).
-- **Chain-reaction beat:** incendiary into a spore pocket or along a mycelium vein triggers a cascade (fuse burns, spore gas detonates) — the core fantasy.
-- Tune `params.json` (e.g. bump `kinetic_radius`), press `P`, confirm bigger craters without a rebuild.
-- **Settling:** after a burst of fire and craters, stop; confirm (debug `D`) chunk boxes clear and `cells_processed` returns to 0 — projectiles/particles don't leak activity.
-- **Perf:** sustained rapid fire; FPS stays ≥60 on the Mac. Record min/avg.
+- Avatar spawns, falls onto terrain, walks (A/D) and jumps (W) with wall/floor collision.
+- Fire each ammo from the avatar; confirm the four distinct terrain-verbs (crater+debris / fire+fuses / acid melt / mycelium plant).
+- **Chain-reaction beat:** incendiary into a spore pocket or along a mycelium vein cascades (fuse burns, spore gas detonates) — the core fantasy.
+- **Self-endangerment beat:** shooting the ground beneath the avatar drops it — the terrain and the character share one world.
+- Tune `params.json` (bump `kinetic_radius`), press `P`, bigger craters, no rebuild.
+- **Settling:** after a burst, stop; debug `D` shows chunk boxes clear and `cells_processed` → 0 (entities + avatar don't leak activity).
+- **Perf:** sustained fire + movement; FPS ≥60 on the Mac. Record min/avg.
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
-git add -A && git commit -m "feat: gun params hot-reload + ammo HUD — M1b complete (M1b task 6)"
+git add -A && git commit -m "feat: avatar render + gun params + ammo HUD — M1b complete (M1b task 7)"
 ```
 
 ---
 
 ## Self-review notes
 
-- Spec coverage (gun slice of the design spec): projectiles as physics events ✓ (T2), payloads/4 ammo ✓ (T3), pixels-as-particles ejecta ✓ (T1/T3), incendiary+spore-detonation chain ✓ (T3 + M1a fire), hot-reload tuning ✓ (T6), aim/fire ✓ (T5).
-- Deliberately deferred: growth lifecycle (next plan, M1c), the 1024×2048 world + camera (M1d — M1b plays at 640×384 with a fixed bottom-center muzzle), a real explosion primitive with radial *displacement* (kinetic carve is clear-not-shove for now; radial shove can come with rigid bodies in M2), oil→sludge reflavor.
-- Chunk-sleeping guard is tested at every layer (particles/projectiles/payloads each have a "settles to 0" test) — the milestone's non-negotiable invariant.
-- Known simplifications, flagged so they aren't mistaken for bugs: kinetic rounds don't crater Rock (keeps generated caves structurally stable without rigid bodies); projectiles fly straight (no gravity) in M1b; the muzzle is a fixed point until there's an avatar.
-- Firing is right-click (or the ammo keys select) specifically to avoid colliding with left-drag paint, which stays as the debug tool.
+- Spec coverage (gun slice of the design spec): projectiles as physics events ✓ (T2), payloads/4 ammo ✓ (T3), pixels-as-particles ejecta ✓ (T1/T3), incendiary+spore-detonation chain ✓ (T3 + M1a fire), walking avatar w/ jump + terrain collision ✓ (T5), aim/fire from the avatar ✓ (T6), avatar render + hot-reload tuning ✓ (T7).
+- Deliberately deferred: growth lifecycle (next plan, M1c), the 1024×2048 world + camera (M1d — M1b plays at 640×384 with the avatar on-screen), a real explosion primitive with radial *displacement* (kinetic carve is clear-not-shove for now; radial shove can come with rigid bodies in M2), oil→sludge reflavor.
+- Chunk-sleeping guard is tested at every layer (particles/projectiles/payloads settle to 0; the avatar writes no cells) — the milestone's non-negotiable invariant.
+- Known simplifications, flagged so they aren't mistaken for bugs: kinetic rounds don't crater Rock (keeps generated caves structurally stable without rigid bodies); projectiles fly straight (no gravity) in M1b; the avatar is a plain AABB — no slopes, no step-up, terrain (falling sand) doesn't push it, it only collides against settled cells, and sand can visually overlap it.
+- Control split: **left-click fires**, **right-drag paints** (debug), so they don't collide. Avatar walks on A/D/←/→ and jumps on W/Space.

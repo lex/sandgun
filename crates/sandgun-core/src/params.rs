@@ -14,7 +14,12 @@ pub const P_FUEL_FLESH: usize = 10;
 pub const P_FUEL_SPOREGAS: usize = 11;
 pub const P_ACID_ETCH: usize = 12; // 0..1 dissolve chance per tick
 pub const P_ACID_ETCH_ROCK: usize = 13;
-pub const P_COUNT: usize = 14;
+pub const P_KINETIC_RADIUS: usize = 14;
+pub const P_KINETIC_EJECTA: usize = 15; // 0..1 fraction of carved solids that fly
+pub const P_INCENDIARY_RADIUS: usize = 16;
+pub const P_ACID_BLOB_RADIUS: usize = 17;
+pub const P_SPORE_BLOB_RADIUS: usize = 18;
+pub const P_COUNT: usize = 19;
 
 /// Hot-tunable sim parameters. Index constants are mirrored in web/src/params.js — keep in sync.
 pub struct Params {
@@ -38,6 +43,11 @@ impl Default for Params {
         v[P_FUEL_SPOREGAS] = 6.0;
         v[P_ACID_ETCH] = 0.35;
         v[P_ACID_ETCH_ROCK] = 0.04;
+        v[P_KINETIC_RADIUS] = 5.0;
+        v[P_KINETIC_EJECTA] = 0.35;
+        v[P_INCENDIARY_RADIUS] = 3.0;
+        v[P_ACID_BLOB_RADIUS] = 3.0;
+        v[P_SPORE_BLOB_RADIUS] = 4.0;
         Params { values: v }
     }
 }

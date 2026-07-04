@@ -12,5 +12,10 @@
   "fuel_flesh": 220,
   "fuel_sporegas": 6,
   "acid_etch": 0.35,
-  "acid_etch_rock": 0.04
+  "acid_etch_rock": 0.04,
+  "kinetic_radius": 5,
+  "kinetic_ejecta": 0.35,
+  "incendiary_radius": 3,
+  "acid_blob_radius": 3,
+  "spore_blob_radius": 4
 }

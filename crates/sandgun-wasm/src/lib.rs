@@ -21,6 +21,27 @@ impl WasmWorld {
     pub fn paint(&mut self, x: i32, y: i32, radius: i32, material: u8) {
         self.inner.paint(x, y, radius, material);
     }
+    pub fn fire(&mut self, x: f32, y: f32, vx: f32, vy: f32, ammo: u8) {
+        self.inner.fire(x, y, vx, vy, ammo);
+    }
+    pub fn spawn_avatar(&mut self, x: f32, y: f32) {
+        self.inner.spawn_avatar(x, y);
+    }
+    pub fn set_avatar_input(&mut self, left: bool, right: bool, jump: bool) {
+        self.inner.set_avatar_input(left, right, jump);
+    }
+    pub fn avatar_xywh(&self) -> Option<Vec<f32>> {
+        self.inner.avatar_xywh().map(|a| a.to_vec())
+    }
+    pub fn avatar_center(&self) -> Option<Vec<f32>> {
+        self.inner.avatar_center().map(|a| a.to_vec())
+    }
+    pub fn projectile_count(&self) -> usize {
+        self.inner.projectile_count()
+    }
+    pub fn particle_count(&self) -> usize {
+        self.inner.particle_count()
+    }
     pub fn render(&mut self) {
         self.inner.render_rgba();
     }

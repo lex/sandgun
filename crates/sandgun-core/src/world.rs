@@ -1,8 +1,22 @@
+use crate::avatar::Avatar;
 use crate::cell::{Cell, Material, FLAG_BURNING};
-use crate::params::{Params, P_ACID_ETCH, P_ACID_ETCH_ROCK, P_FIRE_FLICKER, P_FIRE_LIFETIME, P_SMOKE_EMIT, P_SMOKE_LIFETIME};
+use crate::params::{
+    Params, P_ACID_BLOB_RADIUS, P_ACID_ETCH, P_ACID_ETCH_ROCK, P_FIRE_FLICKER, P_FIRE_LIFETIME,
+    P_INCENDIARY_RADIUS, P_KINETIC_EJECTA, P_KINETIC_RADIUS, P_SMOKE_EMIT, P_SMOKE_LIFETIME,
+    P_SPORE_BLOB_RADIUS,
+};
+use crate::particle::Particle;
+use crate::projectile::{Ammo, Projectile};
 
 pub const CHUNK: usize = 64;
 pub const DISPERSION: isize = 4;
+pub const PARTICLE_GRAVITY: f32 = 0.35;
+const PARTICLE_MAX_SPEED: f32 = 8.0;
+const PROJECTILE_MAX_SPEED: f32 = 24.0;
+const AVATAR_GRAVITY: f32 = 0.3;
+const AVATAR_WALK: f32 = 1.4;
+const AVATAR_JUMP: f32 = 4.2;
+const AVATAR_MAX_FALL: f32 = 6.0;
 
 pub struct World {
     pub width: usize,
@@ -22,6 +36,9 @@ pub struct World {
     /// Cells visited by the last step(); test + debug hook for chunk skipping.
     pub cells_processed: u64,
     pub params: Params,
+    pub(crate) particles: Vec<Particle>,
+    pub(crate) projectiles: Vec<Projectile>,
+    pub(crate) avatar: Option<Avatar>,
 }
 
 impl World {
@@ -42,6 +59,9 @@ impl World {
             rgba: vec![0; width * height * 4],
             cells_processed: 0,
             params: Params::default(),
+            particles: Vec::new(),
+            projectiles: Vec::new(),
+            avatar: None,
         }
     }
 
@@ -57,6 +77,16 @@ impl World {
 
     pub fn get(&self, x: usize, y: usize) -> Material {
         Material::from_u8(self.cells[self.idx(x, y)].material)
+    }
+
+    /// Read the flags of a cell (test helper).
+    pub fn cell_flags(&self, x: usize, y: usize) -> u8 {
+        self.cells[self.idx(x, y)].flags
+    }
+
+    /// Read the aux value of a cell (test helper).
+    pub fn cell_aux(&self, x: usize, y: usize) -> u8 {
+        self.cells[self.idx(x, y)].aux
     }
 
     /// Reset every cell to Empty and clear movement stamps (used by worldgen).
@@ -134,6 +164,113 @@ impl World {
         }
     }
 
+    pub fn spawn_avatar(&mut self, x: f32, y: f32) {
+        self.avatar = Some(Avatar {
+            x,
+            y,
+            vx: 0.0,
+            vy: 0.0,
+            w: 3,
+            h: 6,
+            on_ground: false,
+            want_left: false,
+            want_right: false,
+            want_jump: false,
+        });
+    }
+
+    pub fn set_avatar_input(&mut self, left: bool, right: bool, jump: bool) {
+        if let Some(a) = self.avatar.as_mut() {
+            a.want_left = left;
+            a.want_right = right;
+            a.want_jump = jump;
+        }
+    }
+
+    pub fn avatar_xywh(&self) -> Option<[f32; 4]> {
+        self.avatar.map(|a| [a.x, a.y, a.w as f32, a.h as f32])
+    }
+
+    pub fn avatar_center(&self) -> Option<[f32; 2]> {
+        self.avatar.map(|a| [a.x + a.w as f32 / 2.0, a.y + a.h as f32 / 2.0])
+    }
+
+    /// Would the AABB with top-left (ax, ay) overlap any blocking cell?
+    ///
+    /// The avatar's position is fractional almost every frame (walk speed is ±1.4px,
+    /// gravity accumulates in 0.3px steps), so the continuous AABB [ax, ax+w) x [ay, ay+h)
+    /// can extend into the cell just past `floor(ax) + w` (and `floor(ay) + h`). The cell
+    /// range must cover every cell the AABB overlaps, i.e. up to `ceil(ax + w)` exclusive,
+    /// not just `floor(ax) + w` exclusive — otherwise the trailing fractional cell is never
+    /// tested and the avatar can embed into terrain on its leading/trailing edge.
+    fn avatar_blocked(&self, ax: f32, ay: f32, w: i32, h: i32) -> bool {
+        let x0 = ax.floor() as isize;
+        let y0 = ay.floor() as isize;
+        let x1 = (ax + w as f32).ceil() as isize;
+        let y1 = (ay + h as f32).ceil() as isize;
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let m = self.material_at(x, y);
+                if m.is_solid() || m.is_powder() {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    pub(crate) fn update_avatar(&mut self) {
+        let Some(mut a) = self.avatar.take() else { return };
+        // horizontal intent
+        a.vx = if a.want_left == a.want_right {
+            0.0
+        } else if a.want_right {
+            AVATAR_WALK
+        } else {
+            -AVATAR_WALK
+        };
+        // jump
+        if a.want_jump && a.on_ground {
+            a.vy = -AVATAR_JUMP;
+            a.on_ground = false;
+        }
+        // gravity
+        a.vy = (a.vy + AVATAR_GRAVITY).min(AVATAR_MAX_FALL);
+
+        // move X one pixel at a time
+        let mut moved = a.vx;
+        while moved.abs() >= 0.001 {
+            let step = moved.clamp(-1.0, 1.0);
+            if self.avatar_blocked(a.x + step, a.y, a.w, a.h) {
+                a.vx = 0.0;
+                break;
+            }
+            a.x += step;
+            moved -= step;
+        }
+
+        // move Y one pixel at a time
+        a.on_ground = false;
+        let mut moved = a.vy;
+        while moved.abs() >= 0.001 {
+            let step = moved.clamp(-1.0, 1.0);
+            if self.avatar_blocked(a.x, a.y + step, a.w, a.h) {
+                if step > 0.0 {
+                    a.on_ground = true;
+                }
+                a.vy = 0.0;
+                break;
+            }
+            a.y += step;
+            moved -= step;
+        }
+
+        // keep in-world horizontally; if it falls out the bottom, leave it (dead-ish) at the edge
+        let maxx = (self.width as i32 - a.w) as f32;
+        a.x = a.x.clamp(0.0, maxx.max(0.0));
+        self.avatar = Some(a);
+    }
+
     #[inline]
     pub(crate) fn frame_u8(&self) -> u8 {
         (self.frame & 0xFF) as u8
@@ -173,6 +310,258 @@ impl World {
                 }
             }
         }
+        self.update_projectiles();
+        self.update_particles();
+        self.update_avatar();
+    }
+
+    pub fn fire(&mut self, x: f32, y: f32, vx: f32, vy: f32, ammo: u8) {
+        // Validate velocity: reject if non-finite or both zero
+        if !vx.is_finite() || !vy.is_finite() || (vx == 0.0 && vy == 0.0) {
+            return; // silently ignore invalid projectiles
+        }
+
+        // Clamp velocity components to prevent infinite substep loops
+        let vx_clamped = vx.clamp(-PROJECTILE_MAX_SPEED, PROJECTILE_MAX_SPEED);
+        let vy_clamped = vy.clamp(-PROJECTILE_MAX_SPEED, PROJECTILE_MAX_SPEED);
+
+        self.projectiles.push(Projectile {
+            x,
+            y,
+            vx: vx_clamped,
+            vy: vy_clamped,
+            ammo: Ammo::from_u8(ammo),
+            alive: true,
+        });
+    }
+
+    pub fn projectile_count(&self) -> usize {
+        self.projectiles.len()
+    }
+
+    /// Flat [x0,y0,x1,y1,...] world coords of live projectiles, for rendering.
+    pub fn projectiles_xy(&self) -> Vec<f32> {
+        let mut v = Vec::with_capacity(self.projectiles.len() * 2);
+        for p in &self.projectiles {
+            v.push(p.x);
+            v.push(p.y);
+        }
+        v
+    }
+
+    pub(crate) fn update_projectiles(&mut self) {
+        if self.projectiles.is_empty() {
+            return;
+        }
+        let existing = std::mem::take(&mut self.projectiles);
+        let mut survivors = Vec::with_capacity(existing.len());
+        for mut p in existing {
+            // Clamp velocity to keep the ray-march bounded and prevent NaN propagation
+            p.vx = p.vx.clamp(-PROJECTILE_MAX_SPEED, PROJECTILE_MAX_SPEED);
+            p.vy = p.vy.clamp(-PROJECTILE_MAX_SPEED, PROJECTILE_MAX_SPEED);
+            let steps = p.vx.abs().max(p.vy.abs()).ceil().max(1.0) as i32;
+            let (sx, sy) = (p.vx / steps as f32, p.vy / steps as f32);
+            for _ in 0..steps {
+                let nx = p.x + sx;
+                let ny = p.y + sy;
+                let (cx, cy) = (nx.floor() as isize, ny.floor() as isize);
+                if !self.in_bounds(cx, cy) {
+                    p.alive = false;
+                    break;
+                }
+                let m = self.material_at(cx, cy);
+                if m == Material::Empty || m.is_gas() {
+                    p.x = nx;
+                    p.y = ny;
+                } else {
+                    self.on_impact(cx, cy, p.ammo);
+                    p.alive = false;
+                    break;
+                }
+            }
+            if p.alive {
+                survivors.push(p);
+            }
+        }
+        self.projectiles = survivors;
+    }
+
+    fn on_impact(&mut self, cx: isize, cy: isize, ammo: Ammo) {
+        match ammo {
+            Ammo::Kinetic => {
+                let r = self.params.values[P_KINETIC_RADIUS] as isize;
+                let ej = self.params.values[P_KINETIC_EJECTA];
+                self.carve_crater(cx, cy, r, ej);
+            }
+            Ammo::Incendiary => {
+                let r = self.params.values[P_INCENDIARY_RADIUS] as isize;
+                self.carve_crater(cx, cy, (r - 1).max(1), 0.15);
+                self.ignite_blast(cx, cy, r);
+            }
+            Ammo::Acid => {
+                let r = self.params.values[P_ACID_BLOB_RADIUS] as isize;
+                self.inject_blob(cx, cy, r, Material::Acid);
+            }
+            Ammo::Spore => {
+                let r = self.params.values[P_SPORE_BLOB_RADIUS] as isize;
+                self.inject_blob(cx, cy, r, Material::Mycelium);
+                self.inject_blob(cx, cy - r, (r / 2).max(1), Material::SporeGas); // a puff above
+            }
+        }
+    }
+
+    fn carve_crater(&mut self, cx: isize, cy: isize, radius: isize, ejecta_frac: f32) {
+        for dy in -radius..=radius {
+            for dx in -radius..=radius {
+                if dx * dx + dy * dy > radius * radius {
+                    continue;
+                }
+                let (x, y) = (cx + dx, cy + dy);
+                if !self.in_bounds(x, y) {
+                    continue;
+                }
+                let m = self.material_at(x, y);
+                if m == Material::Empty || m == Material::Rock {
+                    continue; // rock resists kinetic rounds (keeps caves stable)
+                }
+                let (ux, uy) = (x as usize, y as usize);
+                let i = self.idx(ux, uy);
+                // throw a fraction of powders/solids outward as debris; clear the rest
+                if (m.is_powder() || m == Material::Mycelium || m == Material::MushroomFlesh)
+                    && self.chance(ejecta_frac)
+                {
+                    let ang = (self.next_rand() & 255) as f32 / 255.0 * std::f32::consts::TAU;
+                    let spd = 2.0 + (self.next_rand() & 63) as f32 / 32.0;
+                    let mat = self.cells[i].material;
+                    self.spawn_particle(x as f32 + 0.5, y as f32 + 0.5, ang.cos() * spd, ang.sin() * spd - 1.0, mat);
+                }
+                self.cells[i] = Cell::default();
+                self.wake(ux, uy);
+            }
+        }
+    }
+
+    fn ignite_blast(&mut self, cx: isize, cy: isize, radius: isize) {
+        for dy in -radius..=radius {
+            for dx in -radius..=radius {
+                if dx * dx + dy * dy > radius * radius {
+                    continue;
+                }
+                let (x, y) = (cx + dx, cy + dy);
+                if !self.in_bounds(x, y) {
+                    continue;
+                }
+                let (ux, uy) = (x as usize, y as usize);
+                let i = self.idx(ux, uy);
+                let m = Material::from_u8(self.cells[i].material);
+                if self.params.flammability(m) > 0.0 {
+                    self.cells[i].flags |= FLAG_BURNING;
+                    // Deliberately refuel already-burning cells (owner ruling 2026-07-04):
+                    // incendiary blasts refresh fires — this differs from ignite_neighbors,
+                    // which skips already-burning cells to spread fire one cell per frame.
+                    self.cells[i].aux = self.params.fuel(m);
+                    self.stamp[i] = self.frame_u8();
+                    self.wake(ux, uy);
+                } else if m == Material::Empty && self.chance(0.3) {
+                    self.cells[i] = Cell::new(Material::Fire, (self.next_rand() & 3) as u8);
+                    self.stamp[i] = self.frame_u8();
+                    self.wake(ux, uy);
+                }
+            }
+        }
+    }
+
+    fn inject_blob(&mut self, cx: isize, cy: isize, radius: isize, material: Material) {
+        for dy in -radius..=radius {
+            for dx in -radius..=radius {
+                if dx * dx + dy * dy > radius * radius {
+                    continue;
+                }
+                let (x, y) = (cx + dx, cy + dy);
+                if !self.in_bounds(x, y) {
+                    continue;
+                }
+                let (ux, uy) = (x as usize, y as usize);
+                let i = self.idx(ux, uy);
+                let dst = Material::from_u8(self.cells[i].material);
+                // fill empty; acid/spore also eat into soft organics/soil, not rock
+                let soft = matches!(dst, Material::Soil | Material::Sand | Material::Mycelium);
+                if dst == Material::Empty || soft {
+                    self.cells[i] = Cell::new(material, (self.next_rand() & 3) as u8);
+                    self.wake(ux, uy);
+                }
+            }
+        }
+    }
+
+    pub fn spawn_particle(&mut self, x: f32, y: f32, vx: f32, vy: f32, material: u8) {
+        self.particles.push(Particle { x, y, vx, vy, material });
+    }
+
+    pub fn particle_count(&self) -> usize {
+        self.particles.len()
+    }
+
+    /// A cell a particle can fly through without settling.
+    fn particle_passable(&self, x: isize, y: isize) -> bool {
+        let m = self.material_at(x, y);
+        m == Material::Empty || m.is_gas()
+    }
+
+    pub(crate) fn update_particles(&mut self) {
+        if self.particles.is_empty() {
+            return;
+        }
+        let mut survivors: Vec<Particle> = Vec::with_capacity(self.particles.len());
+        let existing = std::mem::take(&mut self.particles);
+        for mut p in existing {
+            p.vy += PARTICLE_GRAVITY;
+            // clamp speed to keep the ray-march bounded and avoid tunneling
+            p.vx = p.vx.clamp(-PARTICLE_MAX_SPEED, PARTICLE_MAX_SPEED);
+            p.vy = p.vy.clamp(-PARTICLE_MAX_SPEED, PARTICLE_MAX_SPEED);
+            let steps = p.vx.abs().max(p.vy.abs()).ceil().max(1.0) as i32;
+            let (sx, sy) = (p.vx / steps as f32, p.vy / steps as f32);
+            let mut settled = false;
+            let mut last_x = p.x;
+            let mut last_y = p.y;
+            for _ in 0..steps {
+                let nx = p.x + sx;
+                let ny = p.y + sy;
+                let (cx, cy) = (nx.floor() as isize, ny.floor() as isize);
+                if !self.in_bounds(cx, cy) {
+                    // left the world: if it went out the sides/top/bottom, drop it
+                    settled = true; // "settled" here means "remove from list"
+                    last_x = f32::NAN; // sentinel: don't write to grid
+                    break;
+                }
+                if self.particle_passable(cx, cy) {
+                    p.x = nx;
+                    p.y = ny;
+                    last_x = nx;
+                    last_y = ny;
+                } else {
+                    // blocked: resettle into the last passable cell we occupied
+                    settled = true;
+                    break;
+                }
+            }
+            if settled {
+                if last_x.is_finite() {
+                    let (cx, cy) = (last_x.floor() as isize, last_y.floor() as isize);
+                    if self.in_bounds(cx, cy) && self.material_at(cx, cy) == Material::Empty {
+                        let (ux, uy) = (cx as usize, cy as usize);
+                        let shade = (self.next_rand() & 3) as u8;
+                        let i = self.idx(ux, uy);
+                        self.cells[i] = Cell::new(Material::from_u8(p.material), shade);
+                        self.wake(ux, uy);
+                    }
+                    // if the last cell isn't empty (rare — landed on a gas that filled), drop silently
+                }
+            } else {
+                survivors.push(p);
+            }
+        }
+        self.particles = survivors;
     }
 
     fn update_cell(&mut self, x: usize, y: usize) {
@@ -510,6 +899,46 @@ impl World {
             self.rgba[o + 1] = (base[1] as i16 + j).clamp(0, 255) as u8;
             self.rgba[o + 2] = (base[2] as i16 + j).clamp(0, 255) as u8;
             self.rgba[o + 3] = 255;
+        }
+
+        // stamp particles (their material color) and projectiles (hot tracer) over the grid
+        for p in &self.particles {
+            let (cx, cy) = (p.x.floor() as isize, p.y.floor() as isize);
+            if self.in_bounds(cx, cy) {
+                let [r, g, b] = Material::from_u8(p.material).base_color();
+                let o = (cy as usize * self.width + cx as usize) * 4;
+                self.rgba[o] = r;
+                self.rgba[o + 1] = g;
+                self.rgba[o + 2] = b;
+                self.rgba[o + 3] = 255;
+            }
+        }
+        for p in &self.projectiles {
+            let (cx, cy) = (p.x.floor() as isize, p.y.floor() as isize);
+            if self.in_bounds(cx, cy) {
+                let o = (cy as usize * self.width + cx as usize) * 4;
+                self.rgba[o] = 255;
+                self.rgba[o + 1] = 240;
+                self.rgba[o + 2] = 200;
+                self.rgba[o + 3] = 255;
+            }
+        }
+
+        // stamp the avatar as a distinct sprite-ish block, after particles/projectiles
+        if let Some(a) = self.avatar {
+            let (x0, y0) = (a.x.floor() as isize, a.y.floor() as isize);
+            for dy in 0..a.h {
+                for dx in 0..a.w {
+                    let (cx, cy) = (x0 + dx as isize, y0 + dy as isize);
+                    if self.in_bounds(cx, cy) {
+                        let o = (cy as usize * self.width + cx as usize) * 4;
+                        self.rgba[o] = 90;
+                        self.rgba[o + 1] = 220;
+                        self.rgba[o + 2] = 240;
+                        self.rgba[o + 3] = 255;
+                    }
+                }
+            }
         }
     }
 
