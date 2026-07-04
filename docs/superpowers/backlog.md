@@ -195,3 +195,14 @@ the cell is unsupported → detach as a falling particle. Local (neighbors only)
 cells, and correctly detects severing (also fixes the earlier "severed bridge keeps stale reach"
 note). Delay-before-drop optional. Falling mycelium becomes a Mycelium-material particle that
 resettles (or dies) on landing.
+
+## Richer mushroom stems: curved, variable length, directional (Lex, 2026-07-04 playtest)
+Stems needn't go straight up — mushrooms can curve and vary length. Lex: "look if it can grow
+first, then maybe lock in a direction and grow there." The fruiting-time FIT-CHECK (being added
+now) delivers the "look before grow" part. Future enhancement: at fruiting, pick a growth
+DIRECTION/curve (not just vertical sway) — a chosen lean/arc the stem follows, validated to fit
+before committing. Combine with species (some species lean, some straight). Builds on the
+existing sway_seed. Enhancement, not a bug; do after the drop mechanic.
+
+NOTE: "stranded mycelium doesn't decay" (Lex playtest) = the ALREADY-DECIDED unsupported-mycelium
+DROP mechanic above — not yet built. It's the next task after the current playtest bug-fix batch.
