@@ -37,7 +37,8 @@ pub const P_PUFF_INTERVAL: usize = 32;   // growth ticks between cap spore puffs
 pub const P_PUFF_SPORES: usize = 33;     // spore cells per puff
 pub const P_RESEED_CHANCE: usize = 34;   // 0..1 a spore adjacent to soil seeds a colony
 pub const P_GUNFIRE_SPORE_CHANCE: usize = 35; // 0..1 a carved flesh cell releases spore gas
-pub const P_COUNT: usize = 36;
+pub const P_ASH_CHANCE: usize = 36; // 0..1 chance burnt-out Mycelium/MushroomFlesh leaves Ash (else Empty)
+pub const P_COUNT: usize = 37;
 
 /// Hot-tunable sim parameters. Index constants are mirrored in web/src/params.js — keep in sync.
 pub struct Params {
@@ -83,6 +84,7 @@ impl Default for Params {
         v[P_PUFF_SPORES] = 5.0;
         v[P_RESEED_CHANCE] = 0.10;
         v[P_GUNFIRE_SPORE_CHANCE] = 0.5;
+        v[P_ASH_CHANCE] = 0.25;
         Params { values: v }
     }
 }

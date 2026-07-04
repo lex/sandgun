@@ -2,9 +2,9 @@ use crate::avatar::Avatar;
 use crate::cell::{Cell, Material, FLAG_BURNING};
 use crate::growth::{FrontierCell, GrowingMushroom};
 use crate::params::{
-    Params, P_ACID_BLOB_RADIUS, P_ACID_ETCH, P_ACID_ETCH_ROCK, P_FIRE_FLICKER, P_FIRE_LIFETIME,
-    P_GUNFIRE_SPORE_CHANCE, P_INCENDIARY_RADIUS, P_KINETIC_EJECTA, P_KINETIC_RADIUS, P_SMOKE_EMIT,
-    P_SMOKE_LIFETIME, P_SPORE_BLOB_RADIUS,
+    Params, P_ACID_BLOB_RADIUS, P_ACID_ETCH, P_ACID_ETCH_ROCK, P_ASH_CHANCE, P_FIRE_FLICKER,
+    P_FIRE_LIFETIME, P_GUNFIRE_SPORE_CHANCE, P_INCENDIARY_RADIUS, P_KINETIC_EJECTA,
+    P_KINETIC_RADIUS, P_SMOKE_EMIT, P_SMOKE_LIFETIME, P_SPORE_BLOB_RADIUS,
 };
 use crate::particle::Particle;
 use crate::projectile::{Ammo, Projectile};
@@ -755,7 +755,15 @@ impl World {
         if self.cells[i].aux == 0 {
             // fuel spent: burn to the product material
             let product = match mat {
-                Material::Mycelium | Material::MushroomFlesh => Material::Ash,
+                // Only sometimes leaves Ash behind -- a burnt mushroom colony should mostly
+                // disappear, not blanket the ground 1:1 in ash.
+                Material::Mycelium | Material::MushroomFlesh => {
+                    if self.chance(self.params.values[P_ASH_CHANCE]) {
+                        Material::Ash
+                    } else {
+                        Material::Empty
+                    }
+                }
                 Material::SporeGas => Material::Fire, // the detonation flash
                 _ => Material::Empty,
             };

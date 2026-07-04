@@ -104,6 +104,12 @@ fn lone_fire_burns_out_and_settles() {
 fn flammability_zero_param_prevents_ignition() {
     let mut w = World::new(64, 64);
     w.params.values[sandgun_core::params::P_FLAM_MYCELIUM] = 0.0;
+    // This test is only about fire immunity, not growth -- disable bridging so the painted
+    // mycelium (which has open air above it, no Soil) doesn't grow via the growth system
+    // (painted mycelium now joins the frontier and can bridge into empty space; see
+    // `painted_mycelium_in_open_bridges` in tests/growth.rs), which would change the mycelium
+    // count independently of fire.
+    w.set_param(sandgun_core::params::P_MAX_REACH as u32, 0.0);
     for x in 20..=40 {
         w.paint(x, 40, 0, Material::Rock as u8);
         w.paint(x, 39, 0, Material::Mycelium as u8);
