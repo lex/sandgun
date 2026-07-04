@@ -3,36 +3,81 @@ use sandgun_core::world::World;
 
 #[test]
 fn avatar_falls_and_rests_on_the_floor() {
-    let mut w = World::new(64, 64);
-    for x in 0..64 {
-        w.paint(x, 50, 0, Material::Rock as u8); // floor at y=50
+    // Tight tolerance on purpose: the avatar's y is fractional almost every frame
+    // (gravity accumulates in 0.3px steps), so a loose tolerance here would hide a
+    // collision AABB that misses the trailing fractional cell and lets the avatar
+    // sink up to ~1px into the floor.
+    for spawn_x in [30.0, 30.1, 30.25, 30.5, 30.75, 30.9] {
+        let mut w = World::new(64, 64);
+        for x in 0..64 {
+            w.paint(x, 50, 0, Material::Rock as u8); // floor at y=50
+        }
+        w.spawn_avatar(spawn_x, 5.0);
+        for _ in 0..300 {
+            w.step();
+        }
+        let [_, y, _, h] = w.avatar_xywh().unwrap();
+        assert!(
+            (y + h - 50.0).abs() <= 0.05,
+            "spawn_x={spawn_x}: avatar's feet should rest essentially ON the floor surface (y+h≈50, got {})",
+            y + h
+        );
+        let av = w.avatar_center().unwrap();
+        assert!(av[1] < 50.0, "spawn_x={spawn_x}: avatar is above the floor, not through it");
     }
-    w.spawn_avatar(30.0, 5.0);
-    for _ in 0..300 {
-        w.step();
-    }
-    let [_, y, _, h] = w.avatar_xywh().unwrap();
-    assert!((y + h - 50.0).abs() <= 1.5, "avatar's feet should rest on the floor (y+h≈50, got {})", y + h);
-    let av = w.avatar_center().unwrap();
-    assert!(av[1] < 50.0, "avatar is above the floor, not through it");
 }
 
 #[test]
 fn avatar_is_blocked_by_a_wall() {
+    // Loop over several fractional spawn offsets: the old buggy AABB only checked
+    // cells up to floor(ax)+w-1, so whether the bug was caught depended on the
+    // avatar's phase relative to the pixel grid (one offset could pass "by luck"
+    // while another sank the avatar's right edge ~1px into the wall).
+    for spawn_x in [30.0, 30.1, 30.2, 30.3, 30.5, 30.7, 30.9, 31.0, 31.3] {
+        let mut w = World::new(64, 64);
+        for x in 0..64 {
+            w.paint(x, 50, 0, Material::Rock as u8); // floor
+        }
+        for y in 40..50 {
+            w.paint(40, y, 0, Material::Rock as u8); // wall at x=40
+        }
+        w.spawn_avatar(spawn_x, 44.0);
+        w.set_avatar_input(false, true, false); // walk right into the wall
+        for _ in 0..300 {
+            w.step();
+        }
+        let [x, _, aw, _] = w.avatar_xywh().unwrap();
+        assert!(
+            x + aw <= 40.05,
+            "spawn_x={spawn_x}: avatar must not pass through the wall (right edge {} vs wall x=40)",
+            x + aw
+        );
+    }
+}
+
+#[test]
+fn avatar_does_not_poke_its_head_through_the_ceiling() {
     let mut w = World::new(64, 64);
     for x in 0..64 {
         w.paint(x, 50, 0, Material::Rock as u8); // floor
+        w.paint(x, 40, 0, Material::Rock as u8); // ceiling, a couple cells above standing head
     }
-    for y in 40..50 {
-        w.paint(40, y, 0, Material::Rock as u8); // wall at x=40
+    w.spawn_avatar(30.0, 44.0); // standing top edge at 44; ceiling's bottom face is at y=41
+    for _ in 0..120 {
+        w.step(); // settle onto the floor
     }
-    w.spawn_avatar(30.0, 44.0);
-    w.set_avatar_input(false, true, false); // walk right into the wall
-    for _ in 0..300 {
+    w.set_avatar_input(false, false, true); // jump straight into the ceiling
+    w.step();
+    w.set_avatar_input(false, false, false);
+    let mut min_y = 100.0f32;
+    for _ in 0..60 {
         w.step();
+        min_y = min_y.min(w.avatar_xywh().unwrap()[1]);
     }
-    let [x, _, aw, _] = w.avatar_xywh().unwrap();
-    assert!(x + aw <= 40.5, "avatar must not pass through the wall (right edge {} vs wall x=40)", x + aw);
+    assert!(min_y >= 41.0 - 0.05, "avatar's head must not penetrate the ceiling (top edge {min_y} vs ceiling bottom=41)");
+    // sanity: the jump was strong enough to actually reach the ceiling, so the bound
+    // above is proving collision, not just an undershot jump.
+    assert!(min_y < 44.0, "jump should have carried the avatar's head up near the ceiling, got {min_y}");
 }
 
 #[test]

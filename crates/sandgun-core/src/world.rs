@@ -196,12 +196,21 @@ impl World {
     }
 
     /// Would the AABB with top-left (ax, ay) overlap any blocking cell?
+    ///
+    /// The avatar's position is fractional almost every frame (walk speed is ±1.4px,
+    /// gravity accumulates in 0.3px steps), so the continuous AABB [ax, ax+w) x [ay, ay+h)
+    /// can extend into the cell just past `floor(ax) + w` (and `floor(ay) + h`). The cell
+    /// range must cover every cell the AABB overlaps, i.e. up to `ceil(ax + w)` exclusive,
+    /// not just `floor(ax) + w` exclusive — otherwise the trailing fractional cell is never
+    /// tested and the avatar can embed into terrain on its leading/trailing edge.
     fn avatar_blocked(&self, ax: f32, ay: f32, w: i32, h: i32) -> bool {
         let x0 = ax.floor() as isize;
         let y0 = ay.floor() as isize;
-        for dy in 0..h {
-            for dx in 0..w {
-                let m = self.material_at(x0 + dx as isize, y0 + dy as isize);
+        let x1 = (ax + w as f32).ceil() as isize;
+        let y1 = (ay + h as f32).ceil() as isize;
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let m = self.material_at(x, y);
                 if m.is_solid() || m.is_powder() {
                     return true;
                 }
