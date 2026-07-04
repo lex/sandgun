@@ -191,6 +191,12 @@ impl World {
                 self.wake(x as usize, y as usize);
             }
         }
+        if Material::from_u8(material) == Material::Mycelium {
+            // Painted mycelium must join the growth frontier the same way worldgen/colonized/
+            // bridged/reseeded/spore-ammo mycelium does, or it stays a permanently inert blob
+            // that never spreads, ages, or fruits.
+            self.seed_frontier_around(cx as isize, cy as isize, radius as isize);
+        }
     }
 
     pub fn spawn_avatar(&mut self, x: f32, y: f32) {

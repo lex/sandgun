@@ -87,6 +87,7 @@ impl Material {
 
 pub const FLAG_PARITY: u8 = 0b0000_0001; // unused; kept for layout stability
 pub const FLAG_BURNING: u8 = 0b0000_0010;
+pub const FLAG_FRUITED: u8 = 0b0000_1000; // mycelium cell has already fruited once (bit 3)
 // flags bit 7: reserved for rigid-body ownership (M2). Do not touch.
 
 #[repr(C)]
