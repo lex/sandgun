@@ -268,3 +268,13 @@ economy: substrate richness = f(moisture, ash). Store moisture (and maybe nutrie
 soil cell's aux; water contact raises moisture; ash raises nutrient value; mycelium consumption
 draws it down. Feeds the organism/strand model's food-seeking. Part of the "Living Mycelium"
 redesign cluster.
+
+## ===== DECISIONS (Lex, 2026-07-04) =====
+- Mycelium redesign = FULL redesign, its own grilled milestone "M1e — Living Mycelium"
+  (replaces fill-blob + random fruiting). Fruiting = NUTRIENT BUDGET (organism fruits when fed).
+  Unsupported drop = TRUE ANCHOR-CONNECTIVITY (self-connected floating blob still falls).
+  Folds in: thin hyphal strands + food-seeking branching, nutrient economy + starvation,
+  ash-as-nutrient, water-seep/moisture substrate richness, mushroom decay, wider stipes,
+  mycelium color (white base), species-as-color. GRILL before building.
+- Projectile-detonates-on-own-fire bug = FIX SOON, STANDALONE (being done now).
+- Everything else in round 3 = deferred into the M1e redesign (don't build twice).
