@@ -114,6 +114,7 @@ impl World {
         self.mushrooms.clear();
         self.caps.clear();
         self.grow_countdown = 0;
+        self.frontier_drops = 0;
     }
 
     /// Wake every chunk for the next step (used after worldgen).

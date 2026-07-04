@@ -335,6 +335,27 @@ fn frontier_cap_is_a_hard_bound_and_counts_drops() {
 }
 
 #[test]
+fn clear_resets_frontier_drops() {
+    // Ensure that World::clear() resets the frontier_drops counter alongside other
+    // growth state, so a regenerated world doesn't carry stale drop counts.
+    let mut w = soil_world();
+    w.set_param(sandgun_core::params::P_MAX_FRONTIER as u32, 3.0);
+    for x in (60..76).step_by(2) {
+        w.paint(x, 90, 0, Material::Mycelium as u8);
+    }
+    w.seed_frontier();
+    for _ in 0..80 {
+        w.step();
+    }
+    // frontier cap has been hit, drops counter is nonzero
+    assert!(w.frontier_drops() > 0, "setup: frontier cap should have been hit");
+
+    // After clear(), frontier_drops must reset to 0 (alongside frontier, mushrooms, etc.)
+    w.clear();
+    assert_eq!(w.frontier_drops(), 0, "clear() must reset frontier_drops to 0");
+}
+
+#[test]
 fn full_lifecycle_world_still_sleeps_after_settling() {
     // avatar + projectile + particles + active growth all at once, then everything must settle to sleep.
     let mut w = soil_world();
