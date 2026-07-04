@@ -240,4 +240,9 @@ pub fn generate(world: &mut World, seed: u32) {
 
     // 5. everything settles alive
     world.wake_all();
+
+    // 6. the mycelium veins seeded above are already living growth — put them on the
+    // frontier so a freshly generated world starts creeping/fruiting on load instead of
+    // sitting inert until something else calls seed_frontier().
+    world.seed_frontier();
 }

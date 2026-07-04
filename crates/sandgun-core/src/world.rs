@@ -46,6 +46,9 @@ pub struct World {
     /// Completed mushroom caps that periodically puff spores: (x, y, puff_countdown, remaining_puffs).
     /// Finite (remaining_puffs starts at 3) so the world can eventually sleep once caps are spent.
     pub(crate) caps: Vec<(usize, usize, u32, u8)>,
+    /// Frontier cells dropped because the frontier was already at P_MAX_FRONTIER when a new
+    /// cell would have been enqueued. Surfaced instead of silently truncating (Task 7 review).
+    pub(crate) frontier_drops: u64,
 }
 
 impl World {
@@ -73,6 +76,7 @@ impl World {
             mushrooms: Vec::new(),
             grow_countdown: 0,
             caps: Vec::new(),
+            frontier_drops: 0,
         }
     }
 
@@ -100,10 +104,16 @@ impl World {
         self.cells[self.idx(x, y)].aux
     }
 
-    /// Reset every cell to Empty and clear movement stamps (used by worldgen).
+    /// Reset every cell to Empty and clear movement stamps (used by worldgen). Also resets
+    /// in-flight growth state (frontier/mushrooms/caps/cadence) so a regenerated world doesn't
+    /// carry growth records that point at terrain positions from the world it replaced.
     pub fn clear(&mut self) {
         self.cells.fill(Cell::default());
         self.stamp.fill(0);
+        self.frontier.clear();
+        self.mushrooms.clear();
+        self.caps.clear();
+        self.grow_countdown = 0;
     }
 
     /// Wake every chunk for the next step (used after worldgen).

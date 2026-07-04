@@ -314,3 +314,46 @@ fn spore_count(w: &World) -> usize {
     }
     n
 }
+
+#[test]
+fn frontier_cap_is_a_hard_bound_and_counts_drops() {
+    // A tiny cap with plenty of colonizable soil/mycelium to grow into: colonize_from and
+    // seed_frontier must never let the frontier exceed the cap, and must count drops instead
+    // of silently truncating (Task 3 review carry-forward).
+    let mut w = soil_world();
+    w.set_param(sandgun_core::params::P_MAX_FRONTIER as u32, 3.0);
+    for x in (60..76).step_by(2) {
+        w.paint(x, 90, 0, Material::Mycelium as u8);
+    }
+    w.seed_frontier();
+    assert!(w.frontier_len() <= 3, "seed_frontier must respect the cap too");
+    for _ in 0..80 {
+        w.step();
+        assert!(w.frontier_len() <= 3, "frontier must never exceed the hard cap");
+    }
+    assert!(w.frontier_drops() > 0, "hitting the cap should be counted, not silently truncated");
+}
+
+#[test]
+fn full_lifecycle_world_still_sleeps_after_settling() {
+    // avatar + projectile + particles + active growth all at once, then everything must settle to sleep.
+    let mut w = soil_world();
+    w.paint(64, 90, 0, Material::Mycelium as u8);
+    w.seed_frontier();
+    w.spawn_avatar(60.0, 70.0);
+    w.fire(5.0, 85.0, 12.0, 0.0, 0);
+    w.spawn_particle(40.0, 60.0, 0.5, 0.0, Material::Sand as u8);
+    // soil_world()'s soil band is ~2500 cells; the budgeted grow() intentionally throttles
+    // colonization (P_GROWTH_BUDGET cells every P_GROWTH_INTERVAL frames) so the world never
+    // busy-spins on a single frame. Verified by trace: this scenario fully drains (frontier and
+    // mushrooms both to 0, soil fully consumed) by ~step 27000. 40000 gives comfortable margin
+    // without weakening the assertion below — it's still a hard requirement that everything
+    // reaches exactly zero.
+    for _ in 0..40_000 {
+        w.step();
+    }
+    assert_eq!(w.frontier_len(), 0, "growth must terminate");
+    assert_eq!(w.mushroom_len(), 0, "mushrooms must finish");
+    w.step();
+    assert_eq!(w.cells_processed, 0, "full living world must return to sleep once settled");
+}

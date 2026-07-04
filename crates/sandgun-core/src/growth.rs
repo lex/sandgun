@@ -30,7 +30,7 @@ impl World {
         for y in 0..self.height {
             for x in 0..self.width {
                 if self.get(x, y) == Material::Mycelium && self.has_colonizable_neighbor(x, y) {
-                    self.frontier.push(FrontierCell { x, y, reach: 0 });
+                    self.push_frontier(FrontierCell { x, y, reach: 0 });
                 }
             }
         }
@@ -57,6 +57,26 @@ impl World {
     pub fn mushroom_len(&self) -> usize {
         self.mushrooms.len()
     }
+    /// Cells dropped because the frontier was already at P_MAX_FRONTIER (see `push_frontier`).
+    pub fn frontier_drops(&self) -> u64 {
+        self.frontier_drops
+    }
+
+    /// Enqueue a frontier cell, enforcing the P_MAX_FRONTIER hard cap. When already at the
+    /// cap, the new cell is dropped (not enqueued) and counted in `frontier_drops` rather than
+    /// truncating the frontier — a blind truncate would silently discard whichever cells
+    /// happen to sit at the end of the vec (including cells mid-way through aging toward
+    /// fruiting), and could drop cells that had already been swap-removed into new slots.
+    /// Not enqueueing only ever keeps the frontier the same size or smaller, so this preserves
+    /// the drain-to-empty/chunk-sleep termination guarantee.
+    fn push_frontier(&mut self, fc: FrontierCell) {
+        let max_frontier = self.params.values[P_MAX_FRONTIER] as usize;
+        if self.frontier.len() >= max_frontier {
+            self.frontier_drops += 1;
+            return;
+        }
+        self.frontier.push(fc);
+    }
 
     /// Budgeted growth tick. Called from step() on the P_GROWTH_INTERVAL cadence.
     /// Returns immediately when there is nothing alive to grow (chunk-sleep safe).
@@ -65,7 +85,6 @@ impl World {
             return;
         }
         let budget = self.params.values[P_GROWTH_BUDGET] as usize;
-        let max_frontier = self.params.values[P_MAX_FRONTIER] as usize;
 
         // Process a budgeted slice of the frontier. Swap-remove retirees; append new growth.
         let mut processed = 0;
@@ -105,9 +124,6 @@ impl World {
                 i += 1;
             }
             let _ = grew;
-            if self.frontier.len() > max_frontier {
-                self.frontier.truncate(max_frontier); // hard cap; see Task 7 note re: logging drops
-            }
         }
         // Mushroom growth + puffs are added in Tasks 3-5; for now a no-op if empty.
         self.grow_mushrooms();
@@ -153,7 +169,7 @@ impl World {
         }
         let (ux, uy) = (nx as usize, ny as usize);
         self.set_mycelium(ux, uy);
-        self.frontier.push(FrontierCell { x: ux, y: uy, reach: 0 });
+        self.push_frontier(FrontierCell { x: ux, y: uy, reach: 0 });
         // consume the spore
         let si = self.idx(x, y);
         self.cells[si].material = Material::Empty as u8;
@@ -254,7 +270,7 @@ impl World {
                 if m == Material::Soil {
                     let (ux, uy) = (nx as usize, ny as usize);
                     self.set_mycelium(ux, uy);
-                    self.frontier.push(FrontierCell { x: ux, y: uy, reach: 0 });
+                    self.push_frontier(FrontierCell { x: ux, y: uy, reach: 0 });
                     did = true;
                     break;
                 }
@@ -262,7 +278,7 @@ impl World {
                 if m == Material::Empty && fc.reach < max_reach && self.in_bounds(nx, ny) {
                     let (ux, uy) = (nx as usize, ny as usize);
                     self.set_mycelium(ux, uy);
-                    self.frontier.push(FrontierCell { x: ux, y: uy, reach: fc.reach + 1 });
+                    self.push_frontier(FrontierCell { x: ux, y: uy, reach: fc.reach + 1 });
                     did = true;
                     break;
                 }
