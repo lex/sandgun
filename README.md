@@ -34,4 +34,4 @@ avatar that walks, jumps, and fires a gun into the terrain.
 - **[** / **]** — brush radius down / up
 - **N** — regenerate a new world (random seed)
 - **P** — hot-reload `web/public/params.json` (tune fire/acid/gun radii without rebuilding)
-- **`` ` ``** — toggle debug overlay (active-chunk boxes, cells-processed count)
+- **G** — toggle debug overlay (active-chunk boxes, cells-processed count)
