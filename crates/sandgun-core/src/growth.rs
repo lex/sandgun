@@ -136,22 +136,29 @@ impl World {
     }
 
     /// If this spore touches soil, maybe convert that soil to a mycelium seed (and consume the spore).
-    pub(crate) fn try_reseed(&mut self, x: usize, y: usize) {
+    /// Returns true if the spore at (x, y) was consumed into a new mycelium seed.
+    pub(crate) fn try_reseed(&mut self, x: usize, y: usize) -> bool {
+        // Check soil adjacency before rolling chance() so spores with no soil neighbor
+        // don't burn an RNG draw every frame for a reseed that can never happen.
+        let soil_target = self
+            .ortho(x, y)
+            .into_iter()
+            .find(|&(nx, ny)| self.material_at(nx, ny) == Material::Soil);
+        let (nx, ny) = match soil_target {
+            Some(t) => t,
+            None => return false,
+        };
         if !self.chance(self.params.values[P_RESEED_CHANCE]) {
-            return;
+            return false;
         }
-        for (nx, ny) in self.ortho(x, y) {
-            if self.material_at(nx, ny) == Material::Soil {
-                let (ux, uy) = (nx as usize, ny as usize);
-                self.set_mycelium(ux, uy);
-                self.frontier.push(FrontierCell { x: ux, y: uy, reach: 0 });
-                // consume the spore
-                let si = self.idx(x, y);
-                self.cells[si].material = Material::Empty as u8;
-                self.wake(x, y);
-                return;
-            }
-        }
+        let (ux, uy) = (nx as usize, ny as usize);
+        self.set_mycelium(ux, uy);
+        self.frontier.push(FrontierCell { x: ux, y: uy, reach: 0 });
+        // consume the spore
+        let si = self.idx(x, y);
+        self.cells[si].material = Material::Empty as u8;
+        self.wake(x, y);
+        true
     }
 
     /// Decrement each cap's puff countdown; at 0, emit a burst of SporeGas above the cap

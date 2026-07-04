@@ -206,3 +206,28 @@ fn spore_adjacent_to_soil_reseeds_a_colony() {
     assert!(mycelium_count(&w) > before, "a spore on soil should seed new mycelium");
     assert!(w.frontier_len() >= 1, "the reseeded cell should join the frontier");
 }
+
+#[test]
+fn reseed_consumes_spore_without_gas_rewake() {
+    // Guards against dispatching update_gas on a stale material: once try_reseed()
+    // consumes the spore (setting the cell to Empty), update_cell must not go on to
+    // call update_gas() using the pre-reseed material for that now-empty cell.
+    let mut w = World::new(64, 64);
+    w.set_param(sandgun_core::params::P_RESEED_CHANCE as u32, 1.0); // force reseed
+    for x in 0..64 {
+        w.paint(x, 41, 0, Material::Rock as u8); // floor so the soil can't avalanche under gravity
+        w.paint(x, 40, 0, Material::Soil as u8);
+    }
+    w.paint(20, 39, 0, Material::SporeGas as u8); // a spore resting on the soil surface
+    w.step();
+    assert_eq!(
+        w.get(20, 39),
+        Material::Empty,
+        "the spore cell should be consumed (Empty) once it reseeds"
+    );
+    assert_eq!(
+        w.get(20, 40),
+        Material::Mycelium,
+        "the adjacent soil should become the new mycelium seed"
+    );
+}

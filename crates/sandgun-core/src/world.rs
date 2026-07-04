@@ -614,11 +614,14 @@ impl World {
             }
             m if m.is_gas() => {
                 self.cells_processed += 1;
-                // M1c: a spore resting against soil may seed a new colony.
-                if mat == Material::SporeGas {
-                    self.try_reseed(x, y);
+                // M1c: a spore resting against soil may seed a new colony. If it does, the
+                // spore cell is consumed (set to Empty) and there's nothing left to move
+                // this frame — skip update_gas so it doesn't dispatch on the stale material.
+                if mat == Material::SporeGas && self.try_reseed(x, y) {
+                    // spore consumed into a mycelium seed; nothing left to move this frame
+                } else {
+                    self.update_gas(x, y, m);
                 }
-                self.update_gas(x, y, m);
             }
             m if m.is_powder() => {
                 self.cells_processed += 1;
