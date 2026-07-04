@@ -20,6 +20,9 @@ pub struct GrowingMushroom {
     pub height: u8,
     pub cap_r: u8,
     pub progress: u16,
+    /// Per-mushroom seed (drawn from the sim RNG at fruiting time) driving the stem's gentle
+    /// horizontal wander -- see `stem_dx`. Keeps each mushroom's sway deterministic but distinct.
+    pub sway_seed: u32,
 }
 
 impl World {
@@ -130,6 +133,7 @@ impl World {
                 && self.cells[ci].flags & FLAG_FRUITED == 0
                 && self.cells[ci].aux >= maturity
                 && self.mushrooms.len() < cap
+                && self.has_fruiting_room(fc.x, fc.y)
                 && self.chance(self.params.values[P_FRUIT_CHANCE])
             {
                 self.try_fruit(fc.x, fc.y);
@@ -245,6 +249,8 @@ impl World {
         let stem = m.height as u16;
         let r = m.cap_r as i32;
         let cap_top_y = m.base_y as i32 - m.height as i32; // stem top; the dome's widest row
+        // The dome must sit atop the stem's ACTUAL (wandered) top, not the mushroom's base x.
+        let stem_top_x = m.x as i32 + stem_dx(m.sway_seed, stem.saturating_sub(1));
         // Precompute the cap dome offsets in a stable order (top-down, left-right) for determinism.
         let cap_cells = cap_dome(r); // Vec<(dx, dy)>
         let total = stem + cap_cells.len() as u16;
@@ -253,14 +259,19 @@ impl World {
         while revealed < n && m.progress + revealed < total {
             let p = m.progress + revealed;
             let (cx, cy) = if p < stem {
-                (m.x as i32, m.base_y as i32 - 1 - p as i32) // stem, bottom-up
+                // stem, bottom-up, gently wandering left/right as it rises (never more than
+                // 1 cell between consecutive heights, so it stays visually connected)
+                (m.x as i32 + stem_dx(m.sway_seed, p), m.base_y as i32 - 1 - p as i32)
             } else {
                 let (dx, dy) = cap_cells[(p - stem) as usize];
-                (m.x as i32 + dx, cap_top_y + dy)
+                (stem_top_x + dx, cap_top_y + dy)
             };
             if self.in_bounds(cx as isize, cy as isize) {
                 let cur = self.material_at(cx as isize, cy as isize);
-                if cur == Material::Empty || cur == Material::Soil {
+                // Only ever occupy Empty space -- growing into Soil (or anything else solid)
+                // would let the mushroom carve straight through the ground. Skipped cells still
+                // advance `progress` below, so the mushroom still completes/retires normally.
+                if cur == Material::Empty {
                     let idx = self.idx(cx as usize, cy as usize);
                     self.cells[idx].material = Material::MushroomFlesh as u8;
                     self.cells[idx].aux = 0;
@@ -271,6 +282,20 @@ impl World {
         }
         self.mushrooms[i].progress += revealed;
         self.mushrooms[i].progress >= total
+    }
+
+    /// Whether there's enough empty headroom above (x, y) for a mushroom to occupy: the cell
+    /// directly above must be Empty, and so must a few more cells of vertical clearance above
+    /// that. Without this, mycelium buried inside soil/sand could fruit and immediately try to
+    /// grow its stem through solid ground.
+    fn has_fruiting_room(&self, x: usize, y: usize) -> bool {
+        let xi = x as isize;
+        for dy in 1..=4i32 {
+            if self.material_at(xi, y as isize - dy as isize) != Material::Empty {
+                return false;
+            }
+        }
+        true
     }
 
     /// Try to colonize neighbors of frontier cell `i`. Returns true if any cell was converted.
@@ -360,7 +385,8 @@ impl World {
         let cmax = self.params.values[P_MUSH_CAP_MAX] as i32;
         let height = self.rand_range(hmin, hmax) as u8;
         let cap_r = self.rand_range(cmin, cmax) as u8;
-        self.mushrooms.push(GrowingMushroom { x, base_y: y, height, cap_r, progress: 0 });
+        let sway_seed = self.next_rand();
+        self.mushrooms.push(GrowingMushroom { x, base_y: y, height, cap_r, progress: 0, sway_seed });
         true
     }
 
@@ -370,6 +396,24 @@ impl World {
             return lo;
         }
         lo + (self.next_rand() as i32).rem_euclid(hi - lo + 1)
+    }
+}
+
+/// Deterministic, bounded horizontal wander for a mushroom stem, seeded per-mushroom so stems
+/// aren't perfectly straight. Amplitude is 1 or 2 cells (picked from the seed) and the path is
+/// a triangle wave: consecutive heights (`p` and `p+1`) always differ by exactly 0 or 1 cell,
+/// so the stem never gaps -- it stays visually connected as it wanders.
+fn stem_dx(seed: u32, p: u16) -> i32 {
+    let amp = 1 + (seed % 2) as i32; // amplitude: 1 or 2 cells
+    let period = 4 * amp; // full up-down-up cycle of a unit-slope triangle wave
+    let shift = (seed / 2) % period as u32; // per-seed phase offset
+    let phase = ((p as u32 + shift) % period as u32) as i32;
+    if phase <= amp {
+        phase
+    } else if phase <= 3 * amp {
+        2 * amp - phase
+    } else {
+        phase - 4 * amp
     }
 }
 

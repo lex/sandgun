@@ -150,6 +150,17 @@ fn mature_mycelium_fruits_a_mushroom_under_the_cap() {
     let mut w = soil_world();
     w.set_param(sandgun_core::params::P_FRUIT_CHANCE as u32, 1.0); // force fruiting when eligible
     w.set_param(sandgun_core::params::P_MATURITY as u32, 10.0);
+    // Disable bridging so colonize_from can't grow mycelium up into the carved headroom shaft
+    // (below) faster than aux ages to maturity, which would silently destroy the headroom this
+    // test depends on before the seed ever gets a chance to fruit.
+    w.set_param(sandgun_core::params::P_MAX_REACH as u32, 0.0);
+    // Carve a narrow headroom shaft above the seed (instead of the old buggy setup, which
+    // buried the seed mid-band with no headroom at all) -- this keeps the test narrowly scoped
+    // to a single fruiting candidate (like the original), rather than exposing the whole soil
+    // band's surface, which would let dozens of cells fruit and retire well within 200 steps.
+    for dy in 1..=4 {
+        w.paint(64, 90 - dy, 0, Material::Empty as u8);
+    }
     w.paint(64, 90, 0, Material::Mycelium as u8);
     w.seed_frontier();
     for _ in 0..200 {
@@ -157,6 +168,76 @@ fn mature_mycelium_fruits_a_mushroom_under_the_cap() {
     }
     assert!(w.mushroom_len() >= 1, "a mature patch should fruit");
     assert!(w.mushroom_len() <= 6, "must respect the global mushroom cap (default 6)");
+}
+
+#[test]
+fn mycelium_buried_in_soil_does_not_fruit() {
+    // Regression: fruiting had no headroom check, so mycelium buried deep inside soil (no empty
+    // cell above it, ever) could fruit and try to grow a mushroom stem straight through solid
+    // ground. A fully sealed rock room packed with soil guarantees no cell -- not even one at
+    // the colonized edge of the pocket -- can ever see empty headroom above it (the room's
+    // ceiling and walls are Rock, not Empty), so this isolates the pure headroom gate: even
+    // once the whole pocket is colonized and every cell is well past maturity, none can fruit.
+    let mut w = World::new(64, 64);
+    for x in 19..=30 {
+        w.paint(x, 19, 0, Material::Rock as u8); // ceiling
+        w.paint(x, 30, 0, Material::Rock as u8); // floor
+    }
+    for y in 19..=30 {
+        w.paint(19, y, 0, Material::Rock as u8); // left wall
+        w.paint(30, y, 0, Material::Rock as u8); // right wall
+    }
+    for x in 20..30 {
+        for y in 20..30 {
+            w.paint(x, y, 0, Material::Soil as u8); // sealed interior, packed with soil
+        }
+    }
+    w.set_param(sandgun_core::params::P_FRUIT_CHANCE as u32, 1.0); // force fruiting when eligible
+    w.set_param(sandgun_core::params::P_MATURITY as u32, 1.0); // mature almost immediately
+    w.paint(25, 25, 0, Material::Mycelium as u8); // deep inside the sealed, soil-packed room
+    w.seed_frontier();
+    for _ in 0..500 {
+        w.step();
+    }
+    assert_eq!(w.mushroom_len(), 0, "mycelium sealed away from all empty space must never fruit");
+}
+
+#[test]
+fn mushroom_does_not_overwrite_soil() {
+    // Regression: reveal_mushroom used to write MushroomFlesh into Soil as well as Empty,
+    // letting a growing mushroom carve straight through solid ground. It must only ever
+    // occupy Empty cells. The soil column is trapped in a rock channel (rock on both sides,
+    // rock floor below) so it physically cannot avalanche away under gravity -- isolating the
+    // pure "must not overwrite soil" behavior from unrelated powder-physics sliding.
+    let mut w = World::new(64, 64);
+    for x in 0..64 {
+        w.paint(x, 50, 0, Material::Rock as u8); // floor so the mushroom has room to grow up
+    }
+    for y in 20..50 {
+        w.paint(34, y, 0, Material::Rock as u8); // channel wall
+        w.paint(35, y, 0, Material::Soil as u8); // soil, trapped in the channel
+        w.paint(36, y, 0, Material::Rock as u8); // channel wall
+    }
+    w.set_param(sandgun_core::params::P_MUSH_HEIGHT_MIN as u32, 10.0);
+    w.set_param(sandgun_core::params::P_MUSH_HEIGHT_MAX as u32, 10.0);
+    w.set_param(sandgun_core::params::P_MUSH_CAP_MIN as u32, 5.0);
+    w.set_param(sandgun_core::params::P_MUSH_CAP_MAX as u32, 5.0);
+    w.try_fruit(32, 49); // dome would normally span roughly x in [25,39], overlapping x=35
+
+    for _ in 0..2000 {
+        w.step();
+        if w.mushroom_len() == 0 {
+            break;
+        }
+    }
+    assert_eq!(w.mushroom_len(), 0, "mushroom must finish growing");
+    for y in 20..50 {
+        assert_eq!(
+            w.get(35, y),
+            Material::Soil,
+            "mushroom growth must not overwrite soil at (35, {y})"
+        );
+    }
 }
 
 #[test]
@@ -172,7 +253,9 @@ fn a_mushroom_grows_stem_then_cap_and_retires() {
     let mut saw_stem = false;
     for _ in 0..steps_needed {
         w.step();
-        if w.get(32, 45) == Material::MushroomFlesh {
+        // The stem wanders gently (+/-2 cells max, see try_fruit's sway_seed), so check a
+        // small window around the base x rather than the exact column.
+        if (30..=34).any(|x| w.get(x, 45) == Material::MushroomFlesh) {
             saw_stem = true;
         }
         if w.mushroom_len() == 0 {
@@ -181,23 +264,24 @@ fn a_mushroom_grows_stem_then_cap_and_retires() {
     }
     assert!(saw_stem, "stem should have been revealed above the base");
     assert_eq!(w.mushroom_len(), 0, "completed mushroom must retire from the list");
-    // A cap cell exists to the SIDE of the stem (x != 32, the stem column) -- excluding the
-    // stem's own column so this genuinely checks for the cap dome, not just more stem. With
-    // height in [6,16] and cap_r in [3,7] (default params), the dome (which now sits only at/
-    // above the stem top) always falls within y in [26, 44] and x in [25, 39].
-    let cap_present = (25..40).any(|x| {
-        x != 32 && (26..45).any(|y| w.get(x, y) == Material::MushroomFlesh)
+    // A cap cell exists to the SIDE of the stem -- excluding a window around the stem's own
+    // (gently wandering, +/-2 cell) column so this genuinely checks for the cap dome, not just
+    // more stem. With height in [6,16] and cap_r in [3,7] (default params) plus the +/-2 sway,
+    // the dome (which sits only at/above the stem top) always falls within y in [26, 44] and
+    // x in [23, 41].
+    let cap_present = (23..42).any(|x| {
+        !(30..=34).contains(&x) && (26..45).any(|y| w.get(x, y) == Material::MushroomFlesh)
     });
     assert!(cap_present, "cap dome should have been revealed to the side of the stem");
 }
 
 #[test]
 fn mushroom_cap_is_a_dome_not_a_ball() {
-    // Deterministic shape: height=10, cap_r=5, base_y=49 -> stem spans y in [39, 48] at x=32,
-    // and the dome (upper hemisphere) must sit AT/ABOVE the stem top (y in [34, 39]), never
-    // bulging out to the sides below the stem top. A full-circle cap bug would paint flesh
-    // beside the stalk (x != 32) in rows y in [40, 44] (cap_top_y+1 .. cap_top_y+r) -- that is
-    // exactly what this test forbids.
+    // Deterministic shape: height=10, cap_r=5, base_y=49 -> stem spans y in [39, 48] around
+    // x=32 (with a gentle +/-2 cell wander), and the dome (upper hemisphere) must sit AT/ABOVE
+    // the stem top (y in [34, 39]), never bulging out to the sides below the stem top. A
+    // full-circle cap bug would paint flesh beside the stalk in rows y in [40, 44]
+    // (cap_top_y+1 .. cap_top_y+r) -- that is exactly what this test forbids.
     let mut w = World::new(64, 64);
     for x in 0..64 {
         w.paint(x, 50, 0, Material::Rock as u8); // floor so the mushroom has room to grow up
@@ -216,30 +300,44 @@ fn mushroom_cap_is_a_dome_not_a_ball() {
     }
     assert_eq!(w.mushroom_len(), 0, "mushroom must finish growing");
 
-    // The stem itself is present at x=32 partway up (sanity check the shape actually grew).
-    assert_eq!(w.get(32, 45), Material::MushroomFlesh, "stem should be present at x=32");
+    // The stem itself is present near x=32 partway up (sanity check the shape actually grew;
+    // the stem may wander +/-2 cells from the base x, hence the small window).
+    assert!(
+        (30..=34).any(|x| w.get(x, 45) == Material::MushroomFlesh),
+        "stem should be present near x=32"
+    );
 
-    // No flesh beside the stalk below the stem top (y in [40, 44] = cap_top_y+1 ..= cap_top_y+r):
-    // a full-circle cap would bulge down around the stalk here; a dome must not.
+    // Locate the dome's ACTUAL center via its widest row (cap_top_y = 39): it must be one
+    // contiguous run of width 2*cap_r+1 = 11, wherever the (possibly wandered) stem top put it.
+    let cap_top_y = 39usize;
+    let dome_xs: Vec<i32> =
+        (20..=44).filter(|&x| w.get(x as usize, cap_top_y) == Material::MushroomFlesh).collect();
+    assert_eq!(dome_xs.len(), 11, "dome's widest row at the stem top should be fully filled (width 11)");
+    let (dmin, dmax) = (*dome_xs.iter().min().unwrap(), *dome_xs.iter().max().unwrap());
+    assert_eq!(dmax - dmin + 1, 11, "dome's widest row must be one contiguous run, not scattered");
+    let dome_center = (dmin + dmax) / 2;
+
+    // No flesh beside the stalk below the stem top (y in [40, 44] = cap_top_y+1 ..= cap_top_y+r),
+    // except within a small window around the stem's own (gently wandering) column: a
+    // full-circle cap would bulge flesh out to dome_center +/- r here; a dome must not. The
+    // wander amplitude is capped at 2, and cap_r=5 here, so the excluded window (5 cells wide)
+    // can never swallow the whole dome width (11 cells).
     for y in 40..=44 {
-        for x in 27..=37 {
-            if x == 32 {
-                continue; // the stem column itself
+        for x in (dome_center - 5)..=(dome_center + 5) {
+            if (30..=34).contains(&x) {
+                continue; // the stem's own (slightly wandering) column
             }
             assert_eq!(
-                w.get(x, y),
+                w.get(x as usize, y),
                 Material::Empty,
                 "cap must not bulge below the stem top at ({x}, {y})"
             );
         }
     }
 
-    // The dome exists above (at/above) the stem top: the widest row (y = cap_top_y = 39) should
-    // span the full cap radius, and flesh should reach up to the dome's apex near y = 34.
-    let widest_row_full = (27..=37).all(|x| w.get(x, 39) == Material::MushroomFlesh);
-    assert!(widest_row_full, "dome's widest row at the stem top should be fully filled");
-    let dome_reaches_apex =
-        (34..=38).any(|y| (27..=37).any(|x| w.get(x, y) == Material::MushroomFlesh));
+    // The dome curves upward above the stem top toward its apex near y = 34.
+    let dome_reaches_apex = (34..=38)
+        .any(|y| (dome_center - 5..=dome_center + 5).any(|x| w.get(x as usize, y) == Material::MushroomFlesh));
     assert!(dome_reaches_apex, "dome should curve upward above the stem top");
 }
 
@@ -247,17 +345,20 @@ fn mushroom_cap_is_a_dome_not_a_ball() {
 fn mycelium_cell_fruits_at_most_once() {
     // A mycelium cell (origin) with a Soil neighbor to its left and right (isolated everywhere
     // else, and floored so the soil can't avalanche), with open sky above so its own mushroom
-    // stem grows straight up and never collides with the neighbors. With P_MATURITY=1 and
-    // P_FRUIT_CHANCE=1.0, origin becomes mature on the very first growth tick it's processed
-    // while it still has an un-consumed Soil neighbor -- a multi-tick window where the buggy
-    // code (no "already fruited" guard) re-rolls fruiting on every subsequent tick it remains in
-    // the frontier, stacking a second overlapping mushroom at the exact same (x, y) before it
-    // exhausts both neighbors and retires. Each of the two Soil neighbors, once colonized, is
-    // itself fully isolated (no other Soil/reachable-Empty neighbor, P_MAX_REACH=0 disables
-    // bridging) so it can fruit at most once too -- that's correct, expected behavior, not the
-    // bug. So the only way this scenario can ever produce MORE than 3 total mushrooms (origin +
-    // its left neighbor + its right neighbor) is if the origin cell fruited more than once --
-    // exactly the bug under test.
+    // stem can grow. With P_MATURITY=1 and P_FRUIT_CHANCE=1.0, origin becomes mature on the very
+    // first growth tick it's processed while it still has an un-consumed Soil neighbor -- a
+    // multi-tick window where the buggy code (no "already fruited" guard) re-rolls fruiting on
+    // every subsequent tick it remains in the frontier, stacking a second overlapping mushroom
+    // at the exact same (x, y) before it exhausts both neighbors and retires. Each of the two
+    // Soil neighbors, once colonized, is itself fully isolated (no other Soil/reachable-Empty
+    // neighbor, P_MAX_REACH=0 disables bridging) so it can fruit at most once too -- that's
+    // correct, expected behavior, not the bug. So the only way this scenario can ever produce
+    // MORE than 3 total mushrooms (origin + its left neighbor + its right neighbor) is if the
+    // origin cell fruited more than once -- exactly the bug under test. (Fewer than 3 can happen
+    // legitimately: the origin's stem wanders +/-2 cells as it rises -- see try_fruit's
+    // sway_seed -- and since the neighbors sit only 1 cell away, the wandering stem can
+    // occasionally occupy a neighbor's headroom column before that neighbor matures, correctly
+    // denying it fruiting per the headroom rule. That's not the bug either.)
     let mut w = World::new(64, 64);
     for x in 29..35 {
         w.paint(x, 33, 0, Material::Rock as u8); // floor (wide enough to block diagonal avalanche)
@@ -286,10 +387,11 @@ fn mycelium_cell_fruits_at_most_once() {
         prev_len = len;
     }
     assert_eq!(w.frontier_len(), 0, "setup: growth should fully settle (all 3 cells exhausted)");
-    assert_eq!(
-        total_spawned, 3,
-        "exactly 3 mushrooms total (origin + its 2 isolated neighbors), each cell fruiting \
-         at most once -- more means the origin cell re-fruited"
+    assert!(total_spawned >= 1, "setup: the origin cell itself should fruit at least once");
+    assert!(
+        total_spawned <= 3,
+        "at most 3 mushrooms total (origin + its 2 isolated neighbors), each cell fruiting \
+         at most once -- more means the origin cell re-fruited (got {total_spawned})"
     );
 }
 
@@ -516,6 +618,92 @@ fn spore_ammo_plants_living_mycelium() {
     }
     let after = mycelium_count(&w);
     assert!(after > before, "planted mycelium should actually spread ({before} -> {after})");
+}
+
+#[test]
+fn painted_mycelium_grows() {
+    // Regression: World::paint just set cells directly, so painted Mycelium never joined the
+    // growth frontier -- unlike worldgen/colonized/bridged/reseeded/spore-ammo mycelium, it
+    // stayed a permanently inert blob (same class of bug as the spore-ammo case already fixed
+    // via seed_frontier_around).
+    let mut w = soil_world();
+    w.paint(64, 90, 3, Material::Mycelium as u8); // paint a blob of mycelium into the soil band
+    assert!(w.frontier_len() > 0, "painting mycelium should seed it into the growth frontier");
+
+    let before = mycelium_count(&w);
+    for _ in 0..300 {
+        w.step();
+    }
+    let after = mycelium_count(&w);
+    assert!(after > before, "painted mycelium should actually spread ({before} -> {after})");
+}
+
+#[test]
+fn mushroom_stems_vary_and_stay_connected() {
+    // Regression: mushroom stems used to be a perfectly straight column at the mushroom's base
+    // x. They should now wander gently (deterministically, seeded per-mushroom) while staying
+    // visually connected, and the cap dome must follow the stem's ACTUAL top, not the base x.
+    let mut w = World::new(64, 64);
+    for x in 0..64 {
+        w.paint(x, 60, 0, Material::Rock as u8); // floor, wide open headroom above
+    }
+    w.set_param(sandgun_core::params::P_MUSH_HEIGHT_MIN as u32, 12.0);
+    w.set_param(sandgun_core::params::P_MUSH_HEIGHT_MAX as u32, 12.0);
+    w.set_param(sandgun_core::params::P_MUSH_CAP_MIN as u32, 4.0);
+    w.set_param(sandgun_core::params::P_MUSH_CAP_MAX as u32, 4.0);
+
+    // Two mushrooms far enough apart to never interact; try_fruit draws sway_seed from the sim
+    // RNG each call, so the two mushrooms get different sway even with identical height/cap.
+    w.try_fruit(15, 59);
+    w.try_fruit(45, 59);
+
+    for _ in 0..3000 {
+        w.step();
+        if w.mushroom_len() == 0 {
+            break;
+        }
+    }
+    assert_eq!(w.mushroom_len(), 0, "both mushrooms must finish growing");
+
+    let mut all_stems = Vec::new();
+    for base_x in [15i32, 45i32] {
+        // Pure-stem rows: p = 0..=10 (height=12, so p=11 is the shared stem-top/dome row,
+        // checked separately below).
+        let mut stem_xs = Vec::new();
+        for p in 0..=10i32 {
+            let y = 59 - 1 - p;
+            let found = (base_x - 4..=base_x + 4)
+                .find(|&x| w.get(x as usize, y as usize) == Material::MushroomFlesh);
+            stem_xs.push(found.expect("stem cell missing at expected height"));
+        }
+        // (b) connected: consecutive stem cells differ by at most 1 in x -- no gaps.
+        for pair in stem_xs.windows(2) {
+            assert!((pair[0] - pair[1]).abs() <= 1, "stem must stay connected: {stem_xs:?}");
+        }
+        all_stems.push((base_x, stem_xs));
+    }
+
+    // (a) at least one stem is NOT perfectly straight (some stem cell x != base x).
+    let any_wavy = all_stems.iter().any(|(base_x, xs)| xs.iter().any(|&x| x != *base_x));
+    assert!(any_wavy, "at least one stem should wander away from its base x");
+
+    // (c) the cap dome sits atop the stem's ACTUAL top, not the mushroom's base x.
+    for (base_x, xs) in &all_stems {
+        let cap_top_y = (59 - 12) as usize; // base_y - height = 47
+        let dome_xs: Vec<i32> = (base_x - 8..=base_x + 8)
+            .filter(|&x| w.get(x as usize, cap_top_y) == Material::MushroomFlesh)
+            .collect();
+        assert!(!dome_xs.is_empty(), "dome's widest row should be present at the stem top");
+        let (dmin, dmax) = (*dome_xs.iter().min().unwrap(), *dome_xs.iter().max().unwrap());
+        assert_eq!(dmax - dmin + 1, dome_xs.len() as i32, "dome widest row should be one contiguous run");
+        let dome_center = (dmin + dmax) / 2;
+        let last_stem_x = *xs.last().unwrap();
+        assert!(
+            (dome_center - last_stem_x).abs() <= 1,
+            "cap dome (centered at {dome_center}) must sit atop the stem's actual top \
+             ({last_stem_x}), not just the base x ({base_x})"
+        );
+    }
 }
 
 #[test]
