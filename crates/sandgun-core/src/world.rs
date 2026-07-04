@@ -43,6 +43,9 @@ pub struct World {
     pub(crate) frontier: Vec<FrontierCell>,
     pub(crate) mushrooms: Vec<GrowingMushroom>,
     pub(crate) grow_countdown: u32,
+    /// Completed mushroom caps that periodically puff spores: (x, y, puff_countdown, remaining_puffs).
+    /// Finite (remaining_puffs starts at 3) so the world can eventually sleep once caps are spent.
+    pub(crate) caps: Vec<(usize, usize, u32, u8)>,
 }
 
 impl World {
@@ -69,6 +72,7 @@ impl World {
             frontier: Vec::new(),
             mushrooms: Vec::new(),
             grow_countdown: 0,
+            caps: Vec::new(),
         }
     }
 
@@ -610,6 +614,10 @@ impl World {
             }
             m if m.is_gas() => {
                 self.cells_processed += 1;
+                // M1c: a spore resting against soil may seed a new colony.
+                if mat == Material::SporeGas {
+                    self.try_reseed(x, y);
+                }
                 self.update_gas(x, y, m);
             }
             m if m.is_powder() => {

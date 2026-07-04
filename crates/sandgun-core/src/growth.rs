@@ -61,7 +61,7 @@ impl World {
     /// Budgeted growth tick. Called from step() on the P_GROWTH_INTERVAL cadence.
     /// Returns immediately when there is nothing alive to grow (chunk-sleep safe).
     pub fn grow(&mut self) {
-        if self.frontier.is_empty() && self.mushrooms.is_empty() {
+        if self.frontier.is_empty() && self.mushrooms.is_empty() && self.caps.is_empty() {
             return;
         }
         let budget = self.params.values[P_GROWTH_BUDGET] as usize;
@@ -111,19 +111,82 @@ impl World {
         }
         // Mushroom growth + puffs are added in Tasks 3-5; for now a no-op if empty.
         self.grow_mushrooms();
+        self.puff_caps();
     }
 
     /// Reveal more of each growing mushroom this tick; retire finished ones.
+    /// Completed caps are recorded in `self.caps` so they can later puff spores (Task 5).
     pub fn grow_mushrooms(&mut self) {
         let reveal = self.params.values[P_MUSH_REVEAL] as u16;
         let mut i = 0;
         while i < self.mushrooms.len() {
             let done = self.reveal_mushroom(i, reveal);
             if done {
+                let m = self.mushrooms[i];
+                let cap_top_y = m.base_y as i32 - m.height as i32;
+                if cap_top_y >= 0 {
+                    let interval = (self.params.values[P_PUFF_INTERVAL] as u32).max(1);
+                    self.caps.push((m.x, cap_top_y as usize, interval, 3));
+                }
                 self.mushrooms.swap_remove(i);
             } else {
                 i += 1;
             }
+        }
+    }
+
+    /// If this spore touches soil, maybe convert that soil to a mycelium seed (and consume the spore).
+    pub(crate) fn try_reseed(&mut self, x: usize, y: usize) {
+        if !self.chance(self.params.values[P_RESEED_CHANCE]) {
+            return;
+        }
+        for (nx, ny) in self.ortho(x, y) {
+            if self.material_at(nx, ny) == Material::Soil {
+                let (ux, uy) = (nx as usize, ny as usize);
+                self.set_mycelium(ux, uy);
+                self.frontier.push(FrontierCell { x: ux, y: uy, reach: 0 });
+                // consume the spore
+                let si = self.idx(x, y);
+                self.cells[si].material = Material::Empty as u8;
+                self.wake(x, y);
+                return;
+            }
+        }
+    }
+
+    /// Decrement each cap's puff countdown; at 0, emit a burst of SporeGas above the cap
+    /// into Empty cells only, then either reset the countdown (more puffs remaining) or
+    /// retire the cap (finite puffing keeps the world able to sleep once caps are spent).
+    fn puff_caps(&mut self) {
+        let interval = (self.params.values[P_PUFF_INTERVAL] as u32).max(1);
+        let spores = self.params.values[P_PUFF_SPORES] as i32;
+        let mut k = 0;
+        while k < self.caps.len() {
+            let (cx, cy, cd, rem) = self.caps[k];
+            if cd == 0 {
+                let (cxi, cyi) = (cx as i32, cy as i32);
+                for s in 0..spores {
+                    let px = cxi + (s - spores / 2);
+                    let py = cyi - 1;
+                    if self.in_bounds(px as isize, py as isize)
+                        && self.material_at(px as isize, py as isize) == Material::Empty
+                    {
+                        let idx = self.idx(px as usize, py as usize);
+                        self.cells[idx].material = Material::SporeGas as u8;
+                        self.cells[idx].aux = Material::SporeGas.initial_aux();
+                        self.wake(px as usize, py as usize);
+                    }
+                }
+                if rem <= 1 {
+                    self.caps.swap_remove(k); // dormant — cap is done puffing, lets the world sleep
+                    continue;
+                }
+                self.caps[k].2 = interval;
+                self.caps[k].3 = rem - 1;
+            } else {
+                self.caps[k].2 = cd - 1;
+            }
+            k += 1;
         }
     }
 

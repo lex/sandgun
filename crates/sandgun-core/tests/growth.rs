@@ -187,3 +187,22 @@ fn a_mushroom_grows_stem_then_cap_and_retires() {
     });
     assert!(cap_present, "cap disk should have been revealed");
 }
+
+#[test]
+fn spore_adjacent_to_soil_reseeds_a_colony() {
+    let mut w = World::new(64, 64);
+    w.set_param(sandgun_core::params::P_RESEED_CHANCE as u32, 1.0); // force reseed
+    for x in 0..64 {
+        w.paint(x, 41, 0, Material::Rock as u8); // floor so the soil can't avalanche under gravity
+        w.paint(x, 40, 0, Material::Soil as u8);
+    }
+    w.paint(20, 39, 0, Material::SporeGas as u8); // a spore resting on the soil surface
+    // seed_frontier finds no mycelium, but puff_and_reseed still runs each growth tick
+    w.seed_frontier();
+    let before = mycelium_count(&w);
+    for _ in 0..60 {
+        w.step();
+    }
+    assert!(mycelium_count(&w) > before, "a spore on soil should seed new mycelium");
+    assert!(w.frontier_len() >= 1, "the reseeded cell should join the frontier");
+}
