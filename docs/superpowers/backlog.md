@@ -182,3 +182,16 @@ Externally flipping a colonized cell between Soil/Mycelium mid-run (e.g. paint o
 leave a stale FrontierCell entry that gets double/triple-processed in one tick if re-colonized
 before the loop reaches it. Doesn't occur in normal gameplay (material isn't reset like that),
 so out of scope, but note if a future feature mutates cells under an active frontier.
+
+**DECISION (Lex, 2026-07-04):** unsupported mycelium DROPS as particles (pixels-as-particles),
+using a LOCAL support rule (no expensive connectivity flood-fill). Own task after the mushroom
+fixes merge; watch chunk-sleep.
+KEY TENSION to solve in that task: a bridge growing across a crater must SURVIVE (it's anchored
+at the soil edge), but a SEVERED fragment must drop. A naive "no solid neighbor" local rule
+conflicts with the bridging feature (mid-bridge cells don't touch soil). Likely approach: use
+the `reach`-from-soil gradient as a cheap support signal — when a neighbor is removed (carving
+wakes the cell), recompute reach = min(neighbor reach)+1; if no neighbor yields reach<=MAX_REACH,
+the cell is unsupported → detach as a falling particle. Local (neighbors only), runs on woken
+cells, and correctly detects severing (also fixes the earlier "severed bridge keeps stale reach"
+note). Delay-before-drop optional. Falling mycelium becomes a Mycelium-material particle that
+resettles (or dies) on landing.
