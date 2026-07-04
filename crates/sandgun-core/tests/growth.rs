@@ -158,3 +158,32 @@ fn mature_mycelium_fruits_a_mushroom_under_the_cap() {
     assert!(w.mushroom_len() >= 1, "a mature patch should fruit");
     assert!(w.mushroom_len() <= 6, "must respect the global mushroom cap (default 6)");
 }
+
+#[test]
+fn a_mushroom_grows_stem_then_cap_and_retires() {
+    let mut w = World::new(64, 64);
+    // open space above a floor so the mushroom has room
+    for x in 0..64 {
+        w.paint(x, 50, 0, Material::Rock as u8);
+    }
+    // directly enqueue a mushroom (bypass fruiting RNG) via the public try_fruit
+    w.try_fruit(32, 49);
+    let steps_needed = 2000;
+    let mut saw_stem = false;
+    for _ in 0..steps_needed {
+        w.step();
+        if w.get(32, 45) == Material::MushroomFlesh {
+            saw_stem = true;
+        }
+        if w.mushroom_len() == 0 {
+            break;
+        }
+    }
+    assert!(saw_stem, "stem should have been revealed above the base");
+    assert_eq!(w.mushroom_len(), 0, "completed mushroom must retire from the list");
+    // a cap cell to the side of the stem top exists (cap is wider than the stem)
+    let cap_present = (28..37).any(|x| {
+        (30..45).any(|y| w.get(x, y) == Material::MushroomFlesh)
+    });
+    assert!(cap_present, "cap disk should have been revealed");
+}

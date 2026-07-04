@@ -110,6 +110,57 @@ impl World {
             }
         }
         // Mushroom growth + puffs are added in Tasks 3-5; for now a no-op if empty.
+        self.grow_mushrooms();
+    }
+
+    /// Reveal more of each growing mushroom this tick; retire finished ones.
+    pub fn grow_mushrooms(&mut self) {
+        let reveal = self.params.values[P_MUSH_REVEAL] as u16;
+        let mut i = 0;
+        while i < self.mushrooms.len() {
+            let done = self.reveal_mushroom(i, reveal);
+            if done {
+                self.mushrooms.swap_remove(i);
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    /// Reveal up to `n` cells of mushroom `i`. Returns true when fully grown.
+    /// Layout: cells [0, height) are the stem column going up from base_y-1;
+    /// cells [height, height + cap_area) are the cap disk around the stem top.
+    fn reveal_mushroom(&mut self, i: usize, n: u16) -> bool {
+        let m = self.mushrooms[i];
+        let stem = m.height as u16;
+        let r = m.cap_r as i32;
+        let cap_top_y = m.base_y as i32 - m.height as i32; // center of the cap
+        // Precompute the cap disk offsets in a stable order (top-down, left-right) for determinism.
+        let cap_cells = cap_disk(r); // Vec<(dx, dy)>
+        let total = stem + cap_cells.len() as u16;
+
+        let mut revealed = 0;
+        while revealed < n && m.progress + revealed < total {
+            let p = m.progress + revealed;
+            let (cx, cy) = if p < stem {
+                (m.x as i32, m.base_y as i32 - 1 - p as i32) // stem, bottom-up
+            } else {
+                let (dx, dy) = cap_cells[(p - stem) as usize];
+                (m.x as i32 + dx, cap_top_y + dy)
+            };
+            if self.in_bounds(cx as isize, cy as isize) {
+                let cur = self.material_at(cx as isize, cy as isize);
+                if cur == Material::Empty || cur == Material::Soil {
+                    let idx = self.idx(cx as usize, cy as usize);
+                    self.cells[idx].material = Material::MushroomFlesh as u8;
+                    self.cells[idx].aux = 0;
+                    self.wake(cx as usize, cy as usize);
+                }
+            }
+            revealed += 1;
+        }
+        self.mushrooms[i].progress += revealed;
+        self.mushrooms[i].progress >= total
     }
 
     /// Try to colonize neighbors of frontier cell `i`. Returns true if any cell was converted.
@@ -210,4 +261,17 @@ impl World {
         }
         lo + (self.next_rand() as i32).rem_euclid(hi - lo + 1)
     }
+}
+
+/// Filled disk of radius r as (dx, dy) offsets, deterministic order (row-major top-down).
+fn cap_disk(r: i32) -> Vec<(i32, i32)> {
+    let mut cells = Vec::new();
+    for dy in -r..=r {
+        for dx in -r..=r {
+            if dx * dx + dy * dy <= r * r {
+                cells.push((dx, dy));
+            }
+        }
+    }
+    cells
 }
