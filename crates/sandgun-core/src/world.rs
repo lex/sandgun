@@ -72,6 +72,16 @@ impl World {
         Material::from_u8(self.cells[self.idx(x, y)].material)
     }
 
+    /// Read the flags of a cell (test helper).
+    pub fn cell_flags(&self, x: usize, y: usize) -> u8 {
+        self.cells[self.idx(x, y)].flags
+    }
+
+    /// Read the aux value of a cell (test helper).
+    pub fn cell_aux(&self, x: usize, y: usize) -> u8 {
+        self.cells[self.idx(x, y)].aux
+    }
+
     /// Reset every cell to Empty and clear movement stamps (used by worldgen).
     pub fn clear(&mut self) {
         self.cells.fill(Cell::default());
@@ -331,6 +341,9 @@ impl World {
                 let m = Material::from_u8(self.cells[i].material);
                 if self.params.flammability(m) > 0.0 {
                     self.cells[i].flags |= FLAG_BURNING;
+                    // Deliberately refuel already-burning cells (owner ruling 2026-07-04):
+                    // incendiary blasts refresh fires — this differs from ignite_neighbors,
+                    // which skips already-burning cells to spread fire one cell per frame.
                     self.cells[i].aux = self.params.fuel(m);
                     self.stamp[i] = self.frame_u8();
                     self.wake(ux, uy);

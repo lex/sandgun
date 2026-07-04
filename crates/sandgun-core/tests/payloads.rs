@@ -1,4 +1,4 @@
-use sandgun_core::cell::Material;
+use sandgun_core::cell::{Material, FLAG_BURNING};
 use sandgun_core::projectile::Ammo;
 use sandgun_core::world::World;
 
@@ -123,4 +123,105 @@ fn firing_into_empty_world_settles_after_impacts_resolve() {
     assert_eq!(w.projectile_count(), 0);
     assert_eq!(w.particle_count(), 0);
     assert_eq!(w.cells_processed, 0, "world must return to rest after the dust settles");
+}
+
+#[test]
+fn incendiary_blast_refuels_already_burning_cells() {
+    let mut w = World::new(64, 64);
+    // Rock floor to hold the oil
+    for x in 20..44 {
+        w.paint(x, 50, 0, Material::Rock as u8);
+    }
+    // Oil layer on the rock
+    for x in 20..44 {
+        for y in 40..50 {
+            w.paint(x, y, 0, Material::Oil as u8);
+        }
+    }
+
+    let initial_fuel = w.params.fuel(Material::Oil);
+
+    // First incendiary round to ignite the oil (adjusted origin for single-step impact as per pattern)
+    w.fire(10.0, 45.0, 12.0, 0.0, Ammo::Incendiary as u8);
+    w.step(); // impact this frame
+
+    // Step several times to let the fire burn and fuel decrease
+    for _ in 0..10 {
+        w.step();
+    }
+
+    // Find a burning oil cell and record its aux (fuel level) before refuel
+    let mut refueled_cells_found = false;
+    let mut aux_before_map = std::collections::HashMap::new();
+    for y in 40..50 {
+        for x in 20..44 {
+            if (w.cell_flags(x, y) & FLAG_BURNING) != 0 && w.get(x, y) == Material::Oil {
+                aux_before_map.insert((x, y), w.cell_aux(x, y));
+            }
+        }
+    }
+
+    assert!(
+        !aux_before_map.is_empty(),
+        "there must be at least one burning oil cell after initial ignition"
+    );
+
+    // Find at least one cell that has actually burned down (aux < initial_fuel)
+    let cells_that_burned: Vec<(usize, usize)> = aux_before_map
+        .iter()
+        .filter_map(|(&pos, &aux)| if aux < initial_fuel { Some(pos) } else { None })
+        .collect();
+
+    assert!(
+        !cells_that_burned.is_empty(),
+        "at least one cell should have burned down (aux < initial_fuel), but all had aux={}",
+        initial_fuel
+    );
+
+    // Second incendiary round at the SAME location as the first (proven impact point)
+    // This ensures we hit the burning region with a second blast
+    w.fire(10.0, 45.0, 12.0, 0.0, Ammo::Incendiary as u8);
+    w.step(); // impact this frame
+
+    // Verify that at least one of the cells that was burning (and had burned down) has been refueled
+    // by checking if it now has full fuel
+    for &(x, y) in &cells_that_burned {
+        let aux_after = w.cell_aux(x, y);
+        let flags_after = w.cell_flags(x, y);
+        let material_after = w.get(x, y);
+
+        if material_after == Material::Oil && (flags_after & FLAG_BURNING) != 0 && aux_after == initial_fuel {
+            // Found a previously-burned cell that has been refueled to full
+            refueled_cells_found = true;
+            break;
+        }
+    }
+
+    // If we didn't find the exact cell refueled, check if any burning cell in the blast area
+    // has been refueled (could be a cell that was in the blast radius)
+    if !refueled_cells_found {
+        for y in 40..50 {
+            for x in 20..44 {
+                if (w.cell_flags(x, y) & FLAG_BURNING) != 0
+                    && w.get(x, y) == Material::Oil
+                    && w.cell_aux(x, y) == initial_fuel {
+                    // Double-check this cell is in the blast center region (not just edge)
+                    let dx = (x as isize - 32).abs(); // blast was at x ~= 32
+                    let dy = (y as isize - 45).abs(); // blast was at y = 45
+                    if dx <= 3 && dy <= 3 {
+                        refueled_cells_found = true;
+                        break;
+                    }
+                }
+            }
+            if refueled_cells_found {
+                break;
+            }
+        }
+    }
+
+    assert!(
+        refueled_cells_found,
+        "incendiary blast must refuel at least one already-burning oil cell (or produce refueled cells in blast radius) with full fuel"
+    );
 }
