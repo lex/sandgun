@@ -92,21 +92,46 @@ impl World {
         // Mushroom growth + puffs are added in Tasks 3-5; for now a no-op if empty.
     }
 
-    /// Try to colonize one neighbor of frontier cell `i`. Returns true if a cell was converted.
-    /// Task 1: soil only. Task 2 extends this to bridge empty within reach.
+    /// Try to colonize neighbors of frontier cell `i`. Returns true if any cell was converted.
+    /// Grows into soil (reach resets to 0) and bridges empty within `P_MAX_REACH` of soil mass.
+    /// Water-adjacent frontier cells get extra colonize attempts per tick (P_WATER_ACCEL).
     pub fn colonize_from(&mut self, i: usize) -> bool {
         let fc = self.frontier[i];
-        // Randomize neighbor order so growth isn't directionally biased.
-        let order = self.shuffled_ortho(fc.x, fc.y);
-        for (nx, ny) in order {
-            if self.material_at(nx, ny) == Material::Soil {
-                let (ux, uy) = (nx as usize, ny as usize);
-                self.set_mycelium(ux, uy);
-                self.frontier.push(FrontierCell { x: ux, y: uy, reach: 0 });
-                return true;
+        let max_reach = self.params.values[P_MAX_REACH] as u8;
+        // Water contact accelerates: one base attempt + extra attempts when a neighbor is water.
+        let attempts = if self.water_adjacent(fc.x, fc.y) {
+            1 + self.params.values[P_WATER_ACCEL] as u32
+        } else {
+            1
+        };
+        let mut grew = false;
+        for _ in 0..attempts {
+            let order = self.shuffled_ortho(fc.x, fc.y);
+            let mut did = false;
+            for (nx, ny) in order {
+                let m = self.material_at(nx, ny);
+                if m == Material::Soil {
+                    let (ux, uy) = (nx as usize, ny as usize);
+                    self.set_mycelium(ux, uy);
+                    self.frontier.push(FrontierCell { x: ux, y: uy, reach: 0 });
+                    did = true;
+                    break;
+                }
+                // Bridge into empty only if this growth is still within reach of soil mass.
+                if m == Material::Empty && fc.reach < max_reach && self.in_bounds(nx, ny) {
+                    let (ux, uy) = (nx as usize, ny as usize);
+                    self.set_mycelium(ux, uy);
+                    self.frontier.push(FrontierCell { x: ux, y: uy, reach: fc.reach + 1 });
+                    did = true;
+                    break;
+                }
+            }
+            grew |= did;
+            if !did {
+                break;
             }
         }
-        false
+        grew
     }
 
     /// Place a fresh mycelium cell: material + reset aux age to 0 + wake its chunk.
@@ -118,9 +143,22 @@ impl World {
         self.wake(x, y);
     }
 
-    fn has_colonizable_neighbor_or_bridge(&self, x: usize, y: usize, _reach: u8) -> bool {
-        // Task 1: soil only. Task 2 adds the in-reach empty check.
-        self.has_colonizable_neighbor(x, y)
+    fn has_colonizable_neighbor_or_bridge(&self, x: usize, y: usize, reach: u8) -> bool {
+        let max_reach = self.params.values[P_MAX_REACH] as u8;
+        for (nx, ny) in self.ortho(x, y) {
+            let m = self.material_at(nx, ny);
+            if m == Material::Soil {
+                return true;
+            }
+            if m == Material::Empty && reach < max_reach && self.in_bounds(nx, ny) {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn water_adjacent(&self, x: usize, y: usize) -> bool {
+        self.ortho(x, y).iter().any(|&(nx, ny)| self.material_at(nx, ny) == Material::Water)
     }
 
     fn shuffled_ortho(&mut self, x: usize, y: usize) -> [(isize, isize); 4] {

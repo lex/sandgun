@@ -148,6 +148,13 @@ impl World {
         }
     }
 
+    /// Set a tunable param by index (used by tests and the wasm bridge). Out-of-range indices are ignored.
+    pub fn set_param(&mut self, index: u32, value: f32) {
+        if (index as usize) < crate::params::P_COUNT {
+            self.params.values[index as usize] = value;
+        }
+    }
+
     pub fn paint(&mut self, cx: i32, cy: i32, radius: i32, material: u8) {
         for dy in -radius..=radius {
             for dx in -radius..=radius {

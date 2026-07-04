@@ -67,8 +67,6 @@ impl WasmWorld {
         self.inner.cells_processed as u32
     }
     pub fn set_param(&mut self, index: u32, value: f32) {
-        if (index as usize) < sandgun_core::params::P_COUNT {
-            self.inner.params.values[index as usize] = value;
-        }
+        self.inner.set_param(index, value);
     }
 }
