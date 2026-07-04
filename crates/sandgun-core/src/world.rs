@@ -785,6 +785,29 @@ impl World {
             self.rgba[o + 2] = (base[2] as i16 + j).clamp(0, 255) as u8;
             self.rgba[o + 3] = 255;
         }
+
+        // stamp particles (their material color) and projectiles (hot tracer) over the grid
+        for p in &self.particles {
+            let (cx, cy) = (p.x.floor() as isize, p.y.floor() as isize);
+            if self.in_bounds(cx, cy) {
+                let [r, g, b] = Material::from_u8(p.material).base_color();
+                let o = (cy as usize * self.width + cx as usize) * 4;
+                self.rgba[o] = r;
+                self.rgba[o + 1] = g;
+                self.rgba[o + 2] = b;
+                self.rgba[o + 3] = 255;
+            }
+        }
+        for p in &self.projectiles {
+            let (cx, cy) = (p.x.floor() as isize, p.y.floor() as isize);
+            if self.in_bounds(cx, cy) {
+                let o = (cy as usize * self.width + cx as usize) * 4;
+                self.rgba[o] = 255;
+                self.rgba[o + 1] = 240;
+                self.rgba[o + 2] = 200;
+                self.rgba[o + 3] = 255;
+            }
+        }
     }
 
     pub fn rgba(&self) -> &[u8] {
