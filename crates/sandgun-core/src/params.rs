@@ -19,7 +19,25 @@ pub const P_KINETIC_EJECTA: usize = 15; // 0..1 fraction of carved solids that f
 pub const P_INCENDIARY_RADIUS: usize = 16;
 pub const P_ACID_BLOB_RADIUS: usize = 17;
 pub const P_SPORE_BLOB_RADIUS: usize = 18;
-pub const P_COUNT: usize = 19;
+// --- M1c growth ---
+pub const P_GROWTH_INTERVAL: usize = 19; // frames between growth ticks
+pub const P_GROWTH_BUDGET: usize = 20;   // frontier cells processed per growth tick
+pub const P_MAX_FRONTIER: usize = 21;    // hard cap on frontier size
+pub const P_MAX_REACH: usize = 22;       // max cells mycelium bridges into empty from soil
+pub const P_WATER_ACCEL: usize = 23;     // extra colonize attempts when water-adjacent
+pub const P_MATURITY: usize = 24;        // aux age a mycelium cell needs to be fruit-eligible
+pub const P_MAX_MUSHROOMS: usize = 25;   // max simultaneous growing mushrooms
+pub const P_FRUIT_CHANCE: usize = 26;    // 0..1 per growth tick a mature cell fruits
+pub const P_MUSH_HEIGHT_MIN: usize = 27;
+pub const P_MUSH_HEIGHT_MAX: usize = 28;
+pub const P_MUSH_CAP_MIN: usize = 29;
+pub const P_MUSH_CAP_MAX: usize = 30;
+pub const P_MUSH_REVEAL: usize = 31;     // cells revealed per growth tick per mushroom
+pub const P_PUFF_INTERVAL: usize = 32;   // growth ticks between cap spore puffs
+pub const P_PUFF_SPORES: usize = 33;     // spore cells per puff
+pub const P_RESEED_CHANCE: usize = 34;   // 0..1 a spore adjacent to soil seeds a colony
+pub const P_GUNFIRE_SPORE_CHANCE: usize = 35; // 0..1 a carved flesh cell releases spore gas
+pub const P_COUNT: usize = 36;
 
 /// Hot-tunable sim parameters. Index constants are mirrored in web/src/params.js — keep in sync.
 pub struct Params {
@@ -48,6 +66,23 @@ impl Default for Params {
         v[P_INCENDIARY_RADIUS] = 3.0;
         v[P_ACID_BLOB_RADIUS] = 3.0;
         v[P_SPORE_BLOB_RADIUS] = 4.0;
+        v[P_GROWTH_INTERVAL] = 3.0;
+        v[P_GROWTH_BUDGET] = 24.0;
+        v[P_MAX_FRONTIER] = 4096.0;
+        v[P_MAX_REACH] = 4.0;
+        v[P_WATER_ACCEL] = 2.0;
+        v[P_MATURITY] = 90.0;
+        v[P_MAX_MUSHROOMS] = 6.0;
+        v[P_FRUIT_CHANCE] = 0.02;
+        v[P_MUSH_HEIGHT_MIN] = 6.0;
+        v[P_MUSH_HEIGHT_MAX] = 16.0;
+        v[P_MUSH_CAP_MIN] = 3.0;
+        v[P_MUSH_CAP_MAX] = 7.0;
+        v[P_MUSH_REVEAL] = 2.0;
+        v[P_PUFF_INTERVAL] = 120.0;
+        v[P_PUFF_SPORES] = 5.0;
+        v[P_RESEED_CHANCE] = 0.10;
+        v[P_GUNFIRE_SPORE_CHANCE] = 0.5;
         Params { values: v }
     }
 }

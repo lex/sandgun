@@ -4,7 +4,12 @@ export function drawOverlay(octx, world, wasm, input, fps, gun) {
   octx.font = '10px monospace';
   octx.fillStyle = '#9f9';
   const rate = input.capTicks ? '60hz' : 'uncap';
-  octx.fillText(`${fps.toFixed(0)} fps · ${rate} · ${input.status}${gun ? ` · ${gun.status}` : ''}${input.debug ? ` · ${world.cells_processed()} cells` : ''}`, 6, 12);
+  let growth = '';
+  if (input.debug) {
+    const drops = world.frontier_drops();
+    growth = ` · frontier ${world.frontier_count()} · mush ${world.mushroom_count()}${drops ? ` · drops ${drops}` : ''}`;
+  }
+  octx.fillText(`${fps.toFixed(0)} fps · ${rate} · ${input.status}${gun ? ` · ${gun.status}` : ''}${input.debug ? ` · ${world.cells_processed()} cells${growth}` : ''}`, 6, 12);
   if (!input.debug) return;
   const cw = w / world.chunks_x(), ch = h / world.chunks_y();
   const active = new Uint8Array(wasm.memory.buffer, world.active_ptr(), world.active_len());

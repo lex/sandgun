@@ -1,9 +1,10 @@
 use crate::avatar::Avatar;
 use crate::cell::{Cell, Material, FLAG_BURNING};
+use crate::growth::{FrontierCell, GrowingMushroom};
 use crate::params::{
     Params, P_ACID_BLOB_RADIUS, P_ACID_ETCH, P_ACID_ETCH_ROCK, P_FIRE_FLICKER, P_FIRE_LIFETIME,
-    P_INCENDIARY_RADIUS, P_KINETIC_EJECTA, P_KINETIC_RADIUS, P_SMOKE_EMIT, P_SMOKE_LIFETIME,
-    P_SPORE_BLOB_RADIUS,
+    P_GUNFIRE_SPORE_CHANCE, P_INCENDIARY_RADIUS, P_KINETIC_EJECTA, P_KINETIC_RADIUS, P_SMOKE_EMIT,
+    P_SMOKE_LIFETIME, P_SPORE_BLOB_RADIUS,
 };
 use crate::particle::Particle;
 use crate::projectile::{Ammo, Projectile};
@@ -39,6 +40,15 @@ pub struct World {
     pub(crate) particles: Vec<Particle>,
     pub(crate) projectiles: Vec<Projectile>,
     pub(crate) avatar: Option<Avatar>,
+    pub(crate) frontier: Vec<FrontierCell>,
+    pub(crate) mushrooms: Vec<GrowingMushroom>,
+    pub(crate) grow_countdown: u32,
+    /// Completed mushroom caps that periodically puff spores: (x, y, puff_countdown, remaining_puffs).
+    /// Finite (remaining_puffs starts at 3) so the world can eventually sleep once caps are spent.
+    pub(crate) caps: Vec<(usize, usize, u32, u8)>,
+    /// Frontier cells dropped because the frontier was already at P_MAX_FRONTIER when a new
+    /// cell would have been enqueued. Surfaced instead of silently truncating (Task 7 review).
+    pub(crate) frontier_drops: u64,
 }
 
 impl World {
@@ -62,6 +72,11 @@ impl World {
             particles: Vec::new(),
             projectiles: Vec::new(),
             avatar: None,
+            frontier: Vec::new(),
+            mushrooms: Vec::new(),
+            grow_countdown: 0,
+            caps: Vec::new(),
+            frontier_drops: 0,
         }
     }
 
@@ -89,10 +104,17 @@ impl World {
         self.cells[self.idx(x, y)].aux
     }
 
-    /// Reset every cell to Empty and clear movement stamps (used by worldgen).
+    /// Reset every cell to Empty and clear movement stamps (used by worldgen). Also resets
+    /// in-flight growth state (frontier/mushrooms/caps/cadence) so a regenerated world doesn't
+    /// carry growth records that point at terrain positions from the world it replaced.
     pub fn clear(&mut self) {
         self.cells.fill(Cell::default());
         self.stamp.fill(0);
+        self.frontier.clear();
+        self.mushrooms.clear();
+        self.caps.clear();
+        self.grow_countdown = 0;
+        self.frontier_drops = 0;
     }
 
     /// Wake every chunk for the next step (used after worldgen).
@@ -138,6 +160,13 @@ impl World {
                 let ci = (ny as usize / CHUNK) * self.chunks_x + (nx as usize / CHUNK);
                 self.active_next[ci] = 1;
             }
+        }
+    }
+
+    /// Set a tunable param by index (used by tests and the wasm bridge). Out-of-range indices are ignored.
+    pub fn set_param(&mut self, index: u32, value: f32) {
+        if (index as usize) < crate::params::P_COUNT {
+            self.params.values[index as usize] = value;
         }
     }
 
@@ -310,6 +339,12 @@ impl World {
                 }
             }
         }
+        // Budgeted growth on the P_GROWTH_INTERVAL cadence (chunk-sleep safe: grow() no-ops when idle).
+        if self.grow_countdown == 0 {
+            self.grow();
+            self.grow_countdown = (self.params.values[crate::params::P_GROWTH_INTERVAL] as u32).max(1);
+        }
+        self.grow_countdown -= 1;
         self.update_projectiles();
         self.update_particles();
         self.update_avatar();
@@ -405,6 +440,7 @@ impl World {
             Ammo::Spore => {
                 let r = self.params.values[P_SPORE_BLOB_RADIUS] as isize;
                 self.inject_blob(cx, cy, r, Material::Mycelium);
+                self.seed_frontier_around(cx, cy, r); // planted mycelium must join the frontier to be alive
                 self.inject_blob(cx, cy - r, (r / 2).max(1), Material::SporeGas); // a puff above
             }
         }
@@ -434,6 +470,15 @@ impl World {
                     let spd = 2.0 + (self.next_rand() & 63) as f32 / 32.0;
                     let mat = self.cells[i].material;
                     self.spawn_particle(x as f32 + 0.5, y as f32 + 0.5, ang.cos() * spd, ang.sin() * spd - 1.0, mat);
+                }
+                if m == Material::MushroomFlesh && self.chance(self.params.values[P_GUNFIRE_SPORE_CHANCE])
+                {
+                    let shade = (self.next_rand() & 3) as u8;
+                    self.cells[i] = Cell::new(Material::SporeGas, shade);
+                    self.wake(ux, uy);
+                    continue; // leave spore gas instead of empty this cell; flags cleared so a
+                              // carved cell that was mid-burn (flesh ignited by a spreading fire)
+                              // doesn't inherit FLAG_BURNING with aux=0 and phantom-detonate next tick
                 }
                 self.cells[i] = Cell::default();
                 self.wake(ux, uy);
@@ -590,7 +635,14 @@ impl World {
             }
             m if m.is_gas() => {
                 self.cells_processed += 1;
-                self.update_gas(x, y, m);
+                // M1c: a spore resting against soil may seed a new colony. If it does, the
+                // spore cell is consumed (set to Empty) and there's nothing left to move
+                // this frame — skip update_gas so it doesn't dispatch on the stale material.
+                if mat == Material::SporeGas && self.try_reseed(x, y) {
+                    // spore consumed into a mycelium seed; nothing left to move this frame
+                } else {
+                    self.update_gas(x, y, m);
+                }
             }
             m if m.is_powder() => {
                 self.cells_processed += 1;

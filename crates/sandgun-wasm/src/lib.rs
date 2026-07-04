@@ -67,8 +67,15 @@ impl WasmWorld {
         self.inner.cells_processed as u32
     }
     pub fn set_param(&mut self, index: u32, value: f32) {
-        if (index as usize) < sandgun_core::params::P_COUNT {
-            self.inner.params.values[index as usize] = value;
-        }
+        self.inner.set_param(index, value);
+    }
+    pub fn frontier_count(&self) -> usize {
+        self.inner.frontier_len()
+    }
+    pub fn mushroom_count(&self) -> usize {
+        self.inner.mushroom_len()
+    }
+    pub fn frontier_drops(&self) -> u32 {
+        self.inner.frontier_drops() as u32
     }
 }

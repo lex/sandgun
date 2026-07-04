@@ -6,6 +6,11 @@ const INDEX = {
   acid_etch: 12, acid_etch_rock: 13,
   kinetic_radius: 14, kinetic_ejecta: 15, incendiary_radius: 16,
   acid_blob_radius: 17, spore_blob_radius: 18,
+  growth_interval: 19, growth_budget: 20, max_frontier: 21, max_reach: 22,
+  water_accel: 23, maturity: 24, max_mushrooms: 25, fruit_chance: 26,
+  mush_height_min: 27, mush_height_max: 28, mush_cap_min: 29, mush_cap_max: 30,
+  mush_reveal: 31, puff_interval: 32, puff_spores: 33, reseed_chance: 34,
+  gunfire_spore_chance: 35,
 };
 
 export async function loadParams(world) {
