@@ -123,3 +123,34 @@ Impl options given the u8 material set: (a) keep single Mycelium/MushroomFlesh m
 but store species in `shade` (render-only variation) or a few `aux` bits; (b) add distinct
 material ids per species (costs slots, simplest rules). Leaning (a) — species tag in shade,
 render picks palette, growth rules read the tag — avoids material-id explosion.
+
+## Committed e2e / gameplay test harness (raised by Lex, 2026-07-04)
+
+Two related questions from Lex: (1) "make gameplay tests where the character does
+something and we check everything works as expected" and (2) "should the browser tests
+we've done so far be included in the project?"
+
+**Current state:** Rust unit/integration tests ARE committed (crates/sandgun-core/tests/*.rs,
+82 tests — cover sim/growth/physics logic). But every browser/Playwright ACCEPTANCE pass
+(M0, M1a, M1b, M1c) has been THROWAWAY — written ad-hoc in the scratchpad by a subagent,
+run once, discarded. Nothing browser-level is committed. So integration across the wasm
+boundary + input wiring + render loop + the actual game loop has ZERO committed coverage.
+
+**Recommendation: yes, build a committed e2e/gameplay suite — it's worth it and overdue.**
+We've re-written these Playwright scripts ~4 times; committing them stops the re-work and
+guards the integration layer the Rust tests can't reach. Shape:
+- Add Playwright as a `web/` devDependency + `playwright.config`, a `web/tests-e2e/` dir,
+  and an `npm run test:e2e` script (boots Vite, runs headless).
+- **Gameplay tests** drive the real game via `window.sandgun` + synthetic keyboard/mouse
+  events and assert observable state: e.g. "hold D → avatar.x increases then stops at a
+  wall"; "fire kinetic into terrain → crater appears (cells cleared) + particle_count spikes";
+  "fire incendiary into oil → burning_count rises then world burns out"; "shoot mycelium →
+  frontier reclaims the hole over N steps"; "world sleeps → cells_processed returns to 0".
+- Assert via the wasm accessors we already expose (avatar_xywh, projectile/particle/
+  frontier/mushroom counts, cells_processed) + optional canvas pixel sampling.
+- Keep them deterministic where possible (fixed seed once RNG-seeding lands; tolerant
+  thresholds otherwise).
+
+**Sequencing:** do this as its own small milestone/task BEFORE M1d (big world + camera),
+so the camera/scrolling work has integration coverage to land against. Not blocking M1c.
+The throwaway M1c acceptance script (in scratchpad) is a good starting template to salvage.
