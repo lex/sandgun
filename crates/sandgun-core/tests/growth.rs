@@ -181,11 +181,116 @@ fn a_mushroom_grows_stem_then_cap_and_retires() {
     }
     assert!(saw_stem, "stem should have been revealed above the base");
     assert_eq!(w.mushroom_len(), 0, "completed mushroom must retire from the list");
-    // a cap cell to the side of the stem top exists (cap is wider than the stem)
-    let cap_present = (28..37).any(|x| {
-        (30..45).any(|y| w.get(x, y) == Material::MushroomFlesh)
+    // A cap cell exists to the SIDE of the stem (x != 32, the stem column) -- excluding the
+    // stem's own column so this genuinely checks for the cap dome, not just more stem. With
+    // height in [6,16] and cap_r in [3,7] (default params), the dome (which now sits only at/
+    // above the stem top) always falls within y in [26, 44] and x in [25, 39].
+    let cap_present = (25..40).any(|x| {
+        x != 32 && (26..45).any(|y| w.get(x, y) == Material::MushroomFlesh)
     });
-    assert!(cap_present, "cap disk should have been revealed");
+    assert!(cap_present, "cap dome should have been revealed to the side of the stem");
+}
+
+#[test]
+fn mushroom_cap_is_a_dome_not_a_ball() {
+    // Deterministic shape: height=10, cap_r=5, base_y=49 -> stem spans y in [39, 48] at x=32,
+    // and the dome (upper hemisphere) must sit AT/ABOVE the stem top (y in [34, 39]), never
+    // bulging out to the sides below the stem top. A full-circle cap bug would paint flesh
+    // beside the stalk (x != 32) in rows y in [40, 44] (cap_top_y+1 .. cap_top_y+r) -- that is
+    // exactly what this test forbids.
+    let mut w = World::new(64, 64);
+    for x in 0..64 {
+        w.paint(x, 50, 0, Material::Rock as u8); // floor so the mushroom has room to grow up
+    }
+    w.set_param(sandgun_core::params::P_MUSH_HEIGHT_MIN as u32, 10.0);
+    w.set_param(sandgun_core::params::P_MUSH_HEIGHT_MAX as u32, 10.0);
+    w.set_param(sandgun_core::params::P_MUSH_CAP_MIN as u32, 5.0);
+    w.set_param(sandgun_core::params::P_MUSH_CAP_MAX as u32, 5.0);
+    w.try_fruit(32, 49); // base_y=49, height=10 -> stem top (cap_top_y) = 39
+
+    for _ in 0..2000 {
+        w.step();
+        if w.mushroom_len() == 0 {
+            break;
+        }
+    }
+    assert_eq!(w.mushroom_len(), 0, "mushroom must finish growing");
+
+    // The stem itself is present at x=32 partway up (sanity check the shape actually grew).
+    assert_eq!(w.get(32, 45), Material::MushroomFlesh, "stem should be present at x=32");
+
+    // No flesh beside the stalk below the stem top (y in [40, 44] = cap_top_y+1 ..= cap_top_y+r):
+    // a full-circle cap would bulge down around the stalk here; a dome must not.
+    for y in 40..=44 {
+        for x in 27..=37 {
+            if x == 32 {
+                continue; // the stem column itself
+            }
+            assert_eq!(
+                w.get(x, y),
+                Material::Empty,
+                "cap must not bulge below the stem top at ({x}, {y})"
+            );
+        }
+    }
+
+    // The dome exists above (at/above) the stem top: the widest row (y = cap_top_y = 39) should
+    // span the full cap radius, and flesh should reach up to the dome's apex near y = 34.
+    let widest_row_full = (27..=37).all(|x| w.get(x, 39) == Material::MushroomFlesh);
+    assert!(widest_row_full, "dome's widest row at the stem top should be fully filled");
+    let dome_reaches_apex =
+        (34..=38).any(|y| (27..=37).any(|x| w.get(x, y) == Material::MushroomFlesh));
+    assert!(dome_reaches_apex, "dome should curve upward above the stem top");
+}
+
+#[test]
+fn mycelium_cell_fruits_at_most_once() {
+    // A mycelium cell (origin) with a Soil neighbor to its left and right (isolated everywhere
+    // else, and floored so the soil can't avalanche), with open sky above so its own mushroom
+    // stem grows straight up and never collides with the neighbors. With P_MATURITY=1 and
+    // P_FRUIT_CHANCE=1.0, origin becomes mature on the very first growth tick it's processed
+    // while it still has an un-consumed Soil neighbor -- a multi-tick window where the buggy
+    // code (no "already fruited" guard) re-rolls fruiting on every subsequent tick it remains in
+    // the frontier, stacking a second overlapping mushroom at the exact same (x, y) before it
+    // exhausts both neighbors and retires. Each of the two Soil neighbors, once colonized, is
+    // itself fully isolated (no other Soil/reachable-Empty neighbor, P_MAX_REACH=0 disables
+    // bridging) so it can fruit at most once too -- that's correct, expected behavior, not the
+    // bug. So the only way this scenario can ever produce MORE than 3 total mushrooms (origin +
+    // its left neighbor + its right neighbor) is if the origin cell fruited more than once --
+    // exactly the bug under test.
+    let mut w = World::new(64, 64);
+    for x in 29..35 {
+        w.paint(x, 33, 0, Material::Rock as u8); // floor (wide enough to block diagonal avalanche)
+    }
+    w.paint(31, 32, 0, Material::Soil as u8); // left neighbor
+    w.paint(33, 32, 0, Material::Soil as u8); // right neighbor
+    w.paint(32, 32, 0, Material::Mycelium as u8); // origin; open sky above for its own stem
+
+    w.set_param(sandgun_core::params::P_MATURITY as u32, 1.0);
+    w.set_param(sandgun_core::params::P_FRUIT_CHANCE as u32, 1.0);
+    w.set_param(sandgun_core::params::P_MAX_MUSHROOMS as u32, 20.0); // cap must not be the limiter
+    w.set_param(sandgun_core::params::P_MAX_REACH as u32, 0.0); // no bridging into empty
+    w.set_param(sandgun_core::params::P_GROWTH_INTERVAL as u32, 1.0); // one growth tick per step
+
+    w.seed_frontier();
+    assert!(w.frontier_len() >= 1, "setup: origin should enter the frontier");
+
+    let mut total_spawned: usize = 0;
+    let mut prev_len = w.mushroom_len();
+    for _ in 0..2000 {
+        w.step();
+        let len = w.mushroom_len();
+        if len > prev_len {
+            total_spawned += len - prev_len;
+        }
+        prev_len = len;
+    }
+    assert_eq!(w.frontier_len(), 0, "setup: growth should fully settle (all 3 cells exhausted)");
+    assert_eq!(
+        total_spawned, 3,
+        "exactly 3 mushrooms total (origin + its 2 isolated neighbors), each cell fruiting \
+         at most once -- more means the origin cell re-fruited"
+    );
 }
 
 #[test]

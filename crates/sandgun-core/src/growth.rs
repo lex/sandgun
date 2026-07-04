@@ -1,4 +1,4 @@
-use crate::cell::{Material, FLAG_BURNING};
+use crate::cell::{Material, FLAG_BURNING, FLAG_FRUITED};
 use crate::params::*;
 use crate::world::World;
 
@@ -127,11 +127,13 @@ impl World {
             let maturity = self.params.values[P_MATURITY] as u8;
             let cap = self.params.values[P_MAX_MUSHROOMS] as usize;
             if self.cells[ci].flags & FLAG_BURNING == 0
+                && self.cells[ci].flags & FLAG_FRUITED == 0
                 && self.cells[ci].aux >= maturity
                 && self.mushrooms.len() < cap
                 && self.chance(self.params.values[P_FRUIT_CHANCE])
             {
                 self.try_fruit(fc.x, fc.y);
+                self.cells[ci].flags |= FLAG_FRUITED;
             }
             let grew = self.colonize_from(i);
             // An exhausted cell (no more soil/empty to colonize) still loiters in the
@@ -242,9 +244,9 @@ impl World {
         let m = self.mushrooms[i];
         let stem = m.height as u16;
         let r = m.cap_r as i32;
-        let cap_top_y = m.base_y as i32 - m.height as i32; // center of the cap
-        // Precompute the cap disk offsets in a stable order (top-down, left-right) for determinism.
-        let cap_cells = cap_disk(r); // Vec<(dx, dy)>
+        let cap_top_y = m.base_y as i32 - m.height as i32; // stem top; the dome's widest row
+        // Precompute the cap dome offsets in a stable order (top-down, left-right) for determinism.
+        let cap_cells = cap_dome(r); // Vec<(dx, dy)>
         let total = stem + cap_cells.len() as u16;
 
         let mut revealed = 0;
@@ -371,10 +373,12 @@ impl World {
     }
 }
 
-/// Filled disk of radius r as (dx, dy) offsets, deterministic order (row-major top-down).
-fn cap_disk(r: i32) -> Vec<(i32, i32)> {
+/// Upper-hemisphere dome of radius r as (dx, dy) offsets, deterministic order (row-major
+/// top-down). dy runs from -r (the apex) to 0 (the widest row), so the dome sits ON TOP of
+/// the stem -- widest at the stem top, curving up to a point -- instead of a full sphere.
+fn cap_dome(r: i32) -> Vec<(i32, i32)> {
     let mut cells = Vec::new();
-    for dy in -r..=r {
+    for dy in -r..=0 {
         for dx in -r..=r {
             if dx * dx + dy * dy <= r * r {
                 cells.push((dx, dy));
