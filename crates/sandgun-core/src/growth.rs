@@ -36,6 +36,27 @@ impl World {
         }
     }
 
+    /// Seed the frontier for a bounded region around an active event (e.g. an ammo impact),
+    /// so mycelium painted outside the normal colonize/reseed paths (which push_frontier
+    /// themselves) still joins the growth frontier and isn't permanently inert. Scans only
+    /// the box [cx-radius-1 .. cx+radius+1] x [cy-radius-1 .. cy+radius+1] (clamped to world
+    /// bounds), so it's O(radius^2) and safe to call at impact time -- it does not run per
+    /// frame and so cannot threaten chunk-sleep.
+    pub(crate) fn seed_frontier_around(&mut self, cx: isize, cy: isize, radius: isize) {
+        let pad = radius + 1;
+        let x0 = (cx - pad).max(0) as usize;
+        let x1 = ((cx + pad).max(0) as usize).min(self.width.saturating_sub(1));
+        let y0 = (cy - pad).max(0) as usize;
+        let y1 = ((cy + pad).max(0) as usize).min(self.height.saturating_sub(1));
+        for y in y0..=y1 {
+            for x in x0..=x1 {
+                if self.get(x, y) == Material::Mycelium && self.has_colonizable_neighbor(x, y) {
+                    self.push_frontier(FrontierCell { x, y, reach: 0 });
+                }
+            }
+        }
+    }
+
     fn has_colonizable_neighbor(&self, x: usize, y: usize) -> bool {
         for (nx, ny) in self.ortho(x, y) {
             if self.material_at(nx, ny) == Material::Soil {
@@ -105,7 +126,8 @@ impl World {
             // Fruit: mature, under the global cap, on a die roll.
             let maturity = self.params.values[P_MATURITY] as u8;
             let cap = self.params.values[P_MAX_MUSHROOMS] as usize;
-            if self.cells[ci].aux >= maturity
+            if self.cells[ci].flags & FLAG_BURNING == 0
+                && self.cells[ci].aux >= maturity
                 && self.mushrooms.len() < cap
                 && self.chance(self.params.values[P_FRUIT_CHANCE])
             {

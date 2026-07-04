@@ -356,6 +356,64 @@ fn clear_resets_frontier_drops() {
 }
 
 #[test]
+fn burning_mycelium_does_not_fruit() {
+    // Regression: grow()'s fruiting check reads self.cells[ci].aux >= maturity without
+    // gating on FLAG_BURNING. aux holds MATURITY on live mycelium but holds FIRE FUEL
+    // once a cell ignites (P_FUEL_MYCELIUM default 130 > P_MATURITY default 90), so a
+    // freshly-ignited mycelium cell's fuel value alone satisfies the fruiting threshold
+    // and can spuriously fruit a mushroom while burning -- fire should kill growth, not
+    // trigger it.
+    let mut w = soil_world();
+    w.set_param(sandgun_core::params::P_FRUIT_CHANCE as u32, 1.0); // force fruiting whenever eligible
+    w.set_param(sandgun_core::params::P_FLAM_MYCELIUM as u32, 1.0); // guarantee ignition on contact
+
+    w.paint(64, 90, 0, Material::Mycelium as u8); // seed in the soil band
+    w.seed_frontier();
+    assert!(w.frontier_len() >= 1, "setup: seed should enter the frontier");
+
+    // Ignite it via real fire spread (not by poking flags directly), same approach as
+    // burning_flesh_puffs_non_burning_spores.
+    w.paint(63, 90, 0, Material::Fire as u8);
+    w.step();
+    assert_ne!(
+        w.cell_flags(64, 90) & sandgun_core::cell::FLAG_BURNING,
+        0,
+        "setup: mycelium should have caught fire"
+    );
+    // Fuel (130) must exceed maturity (90) for this test to actually exercise the bug.
+    assert!(
+        w.cell_aux(64, 90) >= sandgun_core::params::Params::default().values[sandgun_core::params::P_MATURITY] as u8,
+        "setup: burning cell's fuel aux must be >= maturity threshold"
+    );
+
+    // Remove the igniting fire so nothing else nearby could trigger anything.
+    w.paint(63, 90, 0, Material::Empty as u8);
+
+    for _ in 0..30 {
+        w.step();
+        assert_eq!(w.mushroom_len(), 0, "a burning mycelium cell must never fruit");
+    }
+}
+
+#[test]
+fn spore_ammo_plants_living_mycelium() {
+    // Regression: on_impact's Ammo::Spore arm painted mycelium via inject_blob but never
+    // registered those cells in the growth frontier, leaving shot-in mycelium permanently
+    // inert (never spreads/ages/fruits) unlike worldgen/colonized/bridged/reseeded mycelium.
+    let mut w = soil_world();
+    w.fire(5.0, 85.0, 12.0, 0.0, 3); // Ammo::Spore = 3, fired into the soil band
+    w.step();
+    assert!(w.frontier_len() > 0, "planted mycelium must be seeded into the growth frontier");
+
+    let before = mycelium_count(&w);
+    for _ in 0..300 {
+        w.step();
+    }
+    let after = mycelium_count(&w);
+    assert!(after > before, "planted mycelium should actually spread ({before} -> {after})");
+}
+
+#[test]
 fn full_lifecycle_world_still_sleeps_after_settling() {
     // avatar + projectile + particles + active growth all at once, then everything must settle to sleep.
     let mut w = soil_world();

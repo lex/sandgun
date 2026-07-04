@@ -440,6 +440,7 @@ impl World {
             Ammo::Spore => {
                 let r = self.params.values[P_SPORE_BLOB_RADIUS] as isize;
                 self.inject_blob(cx, cy, r, Material::Mycelium);
+                self.seed_frontier_around(cx, cy, r); // planted mycelium must join the frontier to be alive
                 self.inject_blob(cx, cy - r, (r / 2).max(1), Material::SporeGas); // a puff above
             }
         }
