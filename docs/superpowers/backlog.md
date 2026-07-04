@@ -206,3 +206,56 @@ existing sway_seed. Enhancement, not a bug; do after the drop mechanic.
 
 NOTE: "stranded mycelium doesn't decay" (Lex playtest) = the ALREADY-DECIDED unsupported-mycelium
 DROP mechanic above — not yet built. It's the next task after the current playtest bug-fix batch.
+
+# ===== Playtest round 3 (Lex, 2026-07-04) — captured, not yet implemented =====
+
+## BUG: projectiles detonate on their own flames; fire creeps toward player
+Shooting the same spot repeatedly (esp. incendiary) — new projectiles COLLIDE with the Fire
+cells from prior shots and detonate early, never reaching the target; each impact spawns more
+fire slightly closer, so the flame front marches back toward the shooter. Root cause (likely):
+projectile ray-march treats Fire (and maybe gas) as a collision hit. FIX: projectiles should
+pass THROUGH non-solid cells (Fire, SporeGas, Smoke, maybe liquids?) and only collide with
+solids/terrain. Gameplay-affecting — a real bug, small fix. (Confirm which materials a
+projectile should ignore.)
+
+## Mushroom polish
+- **Wider stipes (stems).** 1-wide wavy stems connect only diagonally, so fire can't spread
+  along them (fire is orthogonal-only) and burning leaves stranded bits hanging. Make stems
+  >=2 cells wide (and ensure orthogonal connectivity along the whole stem so fire propagates).
+- **Mushrooms decay after time.** Fruiting bodies aren't permanent — they should rot/decay
+  (→ ash? spores? empty?) after a lifespan, freeing space and feeding the cycle.
+- **Mushroom color / species = color** (already noted): mycelium color question below.
+
+## Unsupported mycelium/mushrooms fall — REFINED connectivity model (supersedes earlier local rule)
+Lex refined the earlier decision: a floating BLOB is "connected to itself" but that's NOT
+enough — it must be connected to something anchoring (ground/soil/terrain). So the support test
+is real CONNECTIVITY-TO-ANCHOR, not just "has a neighbor." Mushrooms AND mycelium that lose
+their anchor should DROP. "May need real physics eventually" (falling clumps → M2 rigid bodies
+territory). Cheaper interim: budgeted flood/union-find from anchors, or reach-gradient
+invalidation on carve. This is bigger than the earlier local-neighbor plan — re-decide cost vs
+correctness. Currently mushrooms + mycelium just hang when their support is destroyed.
+
+## Ash should be colonizable / nutrient
+Mycelium currently colonizes Soil (and bridges Empty) but ignores Ash. Ash is dead organic
+matter — mycelium should consume/colonize it (nutrient source), closing the burn→ash→regrow loop.
+
+## Mycelium color
+Currently light purple/lavender ([176,168,220]). Lex: maybe WHITE. (Ties to species-as-color:
+base mycelium white, species tint later.) Trivial render change.
+
+## ===== BIG DIRECTION: mycelium as a living ORGANISM / hyphal strand network =====
+This cluster (Lex's strongest signal) is a fundamental rethink of the growth model, not tweaks:
+- **Organism, not per-cell randomness.** Today each mycelium cell independently rolls fruiting
+  chance every tick → fruits "randomly and all the time." Lex wants an ORGANISM that ACCUMULATES
+  NUTRIENTS (from consuming soil/ash/matter) and fruits when it has enough. Fruiting becomes a
+  resource-driven event of the colony, not a per-cell dice roll.
+- **Nutrient economy + starvation.** Mycelium that isn't getting nutrients to sustain growth
+  DIES OFF. Growth costs nutrients; consuming substrate yields them; no food → recede/die.
+- **Thin strands, not a filling blob.** Real hyphae: thin exploratory STRANDS that travel long
+  distances; when a strand finds nutrients, MORE strands branch/reinforce toward that food.
+  Replaces the current "colonize every adjacent soil cell into a solid mass" with a
+  filament/network model (exploratory tips, reinforcement gradients).
+This is a redesign of M1c's core growth. Should get its OWN grilling session before any code —
+it interacts with fruiting, drop/connectivity, ash-nutrient, color, and performance/chunk-sleep
+(strand tips are few = cheap; a nutrient field is a new per-cell/region quantity to budget).
+Candidate name: "M1e — Living Mycelium (hyphal network + nutrient economy)".
