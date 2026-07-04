@@ -173,20 +173,34 @@ fn mature_mycelium_fruits_a_mushroom_under_the_cap() {
     // (below) faster than aux ages to maturity, which would silently destroy the headroom this
     // test depends on before the seed ever gets a chance to fruit.
     w.set_param(sandgun_core::params::P_MAX_REACH as u32, 0.0);
-    // Carve a narrow headroom shaft above the seed (instead of the old buggy setup, which
-    // buried the seed mid-band with no headroom at all) -- this keeps the test narrowly scoped
-    // to a single fruiting candidate (like the original), rather than exposing the whole soil
-    // band's surface, which would let dozens of cells fruit and retire well within 200 steps.
-    for dy in 1..=4 {
-        w.paint(64, 90 - dy, 0, Material::Empty as u8);
+    // Carve a headroom clearing above the seed (instead of the old buggy setup, which buried
+    // the seed mid-band with no headroom at all) -- this keeps the test narrowly scoped to a
+    // single fruiting candidate (like the original), rather than exposing the whole soil band's
+    // surface, which would let dozens of cells fruit and retire well within 200 steps.
+    //
+    // Fix A (mushroom footprint fit-check) now requires the WHOLE footprint -- stem plus cap
+    // dome, not just a shallow peek above the origin -- to be genuinely Empty before a mushroom
+    // can spawn, so the clearing must be wide and deep enough for the tallest/widest shape the
+    // default height (max 16) / cap radius (max 7) ranges can roll, with a small margin.
+    for dy in 1..=25i32 {
+        for dx in -8..=8i32 {
+            w.paint(64 + dx, 90 - dy, 0, Material::Empty as u8);
+        }
     }
     w.paint(64, 90, 0, Material::Mycelium as u8);
     w.seed_frontier();
+    // Track whether a mushroom ever spawned, rather than only checking at the very end --
+    // Fix A's stricter fit-check can shift exactly when (relative to this fixed step budget)
+    // the eligible candidate's footprint clears, without changing whether it fruits at all.
+    let mut fruited = false;
     for _ in 0..200 {
         w.step();
+        if w.mushroom_len() >= 1 {
+            fruited = true;
+        }
+        assert!(w.mushroom_len() <= 6, "must respect the global mushroom cap (default 6)");
     }
-    assert!(w.mushroom_len() >= 1, "a mature patch should fruit");
-    assert!(w.mushroom_len() <= 6, "must respect the global mushroom cap (default 6)");
+    assert!(fruited, "a mature patch should fruit");
 }
 
 #[test]
@@ -358,6 +372,113 @@ fn mushroom_cap_is_a_dome_not_a_ball() {
     let dome_reaches_apex = (34..=38)
         .any(|y| (dome_center - 5..=dome_center + 5).any(|x| w.get(x as usize, y) == Material::MushroomFlesh));
     assert!(dome_reaches_apex, "dome should curve upward above the stem top");
+}
+
+#[test]
+fn mushroom_cap_reveals_bottom_row_before_apex() {
+    // Regression: cap_dome() used to be ordered top-down (dy from -r to 0), so the very FIRST
+    // cap cell revealed was the apex -- a single flesh cell floating above the stem before the
+    // rest of the dome filled in. It must reveal bottom-up so the cap stays grounded/connected
+    // to the stem top throughout its growth.
+    let mut w = World::new(64, 64);
+    for x in 0..64 {
+        w.paint(x, 60, 0, Material::Rock as u8);
+    }
+    let height: i32 = 5;
+    let cap_r: i32 = 5;
+    w.set_param(sandgun_core::params::P_MUSH_HEIGHT_MIN as u32, height as f32);
+    w.set_param(sandgun_core::params::P_MUSH_HEIGHT_MAX as u32, height as f32);
+    w.set_param(sandgun_core::params::P_MUSH_CAP_MIN as u32, cap_r as f32);
+    w.set_param(sandgun_core::params::P_MUSH_CAP_MAX as u32, cap_r as f32);
+    w.set_param(sandgun_core::params::P_MUSH_REVEAL as u32, 1.0); // exactly one cell revealed per growth tick
+    w.set_param(sandgun_core::params::P_GROWTH_INTERVAL as u32, 1.0); // one growth tick per step
+
+    let base_x = 32i32;
+    let base_y = 59i32;
+    w.try_fruit(base_x as usize, base_y as usize);
+
+    // `height` steps fully reveal the stem (progress == stem == height); the (height+1)th
+    // step reveals exactly the FIRST entry of cap_dome(cap_r) -- nothing else.
+    for _ in 0..(height + 1) {
+        w.step();
+    }
+
+    let cap_top_y = (base_y - height) as usize;
+    let apex_y = (cap_top_y as i32 - cap_r) as usize;
+    let window = cap_r + 2; // covers the stem's +/-2 sway plus the dome radius
+
+    let bottom_row_filled = (base_x - window..=base_x + window)
+        .any(|x| w.get(x as usize, cap_top_y) == Material::MushroomFlesh);
+    let apex_filled = (base_x - window..=base_x + window)
+        .any(|x| w.get(x as usize, apex_y) == Material::MushroomFlesh);
+
+    assert!(
+        bottom_row_filled,
+        "the first cap cell revealed should be on the widest row, flush against the stem top"
+    );
+    assert!(!apex_filled, "the apex must not be revealed before the widest row grounds the cap");
+}
+
+#[test]
+fn mushrooms_do_not_overlap() {
+    // Regression: reveal_mushroom only ever writes into Empty cells (won't overwrite), but
+    // nothing checked at FRUITING time that the whole footprint was clear, so adjacent
+    // mushrooms could be enqueued back-to-back and interleave/merge as they both grew into the
+    // same space. A fit-check at fruiting time must reject a mushroom whose footprint would
+    // land on top of an already-grown one.
+    let mut w = World::new(64, 64);
+    for x in 0..64 {
+        w.paint(x, 60, 0, Material::Rock as u8); // floor, open headroom above
+    }
+    w.set_param(sandgun_core::params::P_MUSH_HEIGHT_MIN as u32, 5.0);
+    w.set_param(sandgun_core::params::P_MUSH_HEIGHT_MAX as u32, 5.0);
+    w.set_param(sandgun_core::params::P_MUSH_CAP_MIN as u32, 5.0);
+    w.set_param(sandgun_core::params::P_MUSH_CAP_MAX as u32, 5.0);
+
+    assert!(w.try_fruit(32, 59), "first mushroom should spawn freely in open space");
+    // Let the first mushroom fully grow before the second tries to fruit into overlapping
+    // ground, so the fit-check has real flesh cells (not just a pending plan) to detect.
+    for _ in 0..2000 {
+        w.step();
+        if w.mushroom_len() == 0 {
+            break;
+        }
+    }
+    assert_eq!(w.mushroom_len(), 0, "setup: first mushroom should finish growing");
+
+    // Second mushroom's base is only 2 cells away -- with cap_r=5 (diameter 11) its footprint
+    // necessarily overlaps the first mushroom's now-solid flesh, regardless of stem sway.
+    let spawned = w.try_fruit(34, 59);
+    assert!(!spawned, "a mushroom whose footprint overlaps another must not spawn");
+    assert_eq!(w.mushroom_len(), 0, "an overlapping mushroom must not be added to the growing list");
+}
+
+#[test]
+fn mushroom_needs_clear_footprint() {
+    // Regression: fruiting had no whole-footprint check, so a mycelium cell whose cap would
+    // land on an obstruction (ceiling, another mushroom, etc.) could still fruit and grow a
+    // stem straight into it, letting the cap dome carve through or interleave with solid cells.
+    let mut w = World::new(64, 64);
+    for x in 0..64 {
+        w.paint(x, 60, 0, Material::Rock as u8); // floor
+    }
+    w.set_param(sandgun_core::params::P_MUSH_HEIGHT_MIN as u32, 5.0);
+    w.set_param(sandgun_core::params::P_MUSH_HEIGHT_MAX as u32, 5.0);
+    w.set_param(sandgun_core::params::P_MUSH_CAP_MIN as u32, 5.0);
+    w.set_param(sandgun_core::params::P_MUSH_CAP_MAX as u32, 5.0);
+    // With base_y=59 and height=5, the stem occupies rows y in [54, 58]; the cap dome (radius 5)
+    // occupies rows y in [49, 54]. Block a wide rock ceiling across rows [49, 53] -- pure dome
+    // territory, wide enough to cover the stem's +/-2 sway -- while leaving the stem's own rows
+    // open, isolating "cap footprint obstructed" from "stem footprint obstructed".
+    for x in 20..45 {
+        for y in 49..=53 {
+            w.paint(x, y, 0, Material::Rock as u8);
+        }
+    }
+
+    let spawned = w.try_fruit(32, 59);
+    assert!(!spawned, "a mushroom whose cap footprint is obstructed must not spawn");
+    assert_eq!(w.mushroom_len(), 0, "an obstructed mushroom must not be added to the growing list");
 }
 
 #[test]
@@ -676,6 +797,48 @@ fn burning_flesh_puffs_non_burning_spores() {
     assert_eq!(fire_count(&w), 0, "a carved spore cell must not self-detonate absent real fire");
 }
 
+#[test]
+fn burning_mushroom_leaves_sparse_ash() {
+    // Regression: burnt-out Mycelium/MushroomFlesh always converted 1:1 to Ash. That's far too
+    // much ash for a burned mushroom colony -- it should mostly disappear (Empty), leaving only
+    // some ash behind.
+    let mut w = World::new(64, 64);
+    w.set_param(sandgun_core::params::P_FLAM_FLESH as u32, 1.0); // guarantee ignition on contact
+    w.set_param(sandgun_core::params::P_FUEL_FLESH as u32, 1.0); // burn out almost immediately
+
+    let mut flesh_count = 0usize;
+    for x in 20..30 {
+        for y in 20..30 {
+            w.paint(x, y, 0, Material::MushroomFlesh as u8);
+            flesh_count += 1;
+        }
+    }
+    w.paint(19, 25, 0, Material::Fire as u8); // ignite the slab from one edge
+
+    for _ in 0..200 {
+        w.step();
+    }
+
+    let ash = ash_count(&w);
+    assert!(ash > 0, "some ash should form");
+    assert!(
+        (ash as f32) < 0.6 * flesh_count as f32,
+        "ash should be sparse, not 1:1 with burnt flesh ({ash} ash / {flesh_count} flesh)"
+    );
+}
+
+fn ash_count(w: &World) -> usize {
+    let mut n = 0;
+    for y in 0..w.height {
+        for x in 0..w.width {
+            if w.get(x, y) == Material::Ash {
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
 fn fire_count(w: &World) -> usize {
     let mut n = 0;
     for y in 0..w.height {
@@ -814,6 +977,44 @@ fn painted_mycelium_grows() {
     }
     let after = mycelium_count(&w);
     assert!(after > before, "painted mycelium should actually spread ({before} -> {after})");
+}
+
+#[test]
+fn painted_mycelium_on_soil_grows() {
+    // Painted mycelium adjacent to Soil must join the growth frontier and spread, same as
+    // worldgen/colonized/bridged/reseeded/spore-ammo mycelium.
+    let mut w = soil_world();
+    w.paint(64, 90, 0, Material::Mycelium as u8); // paint a single seed into the soil band
+    assert!(w.frontier_len() > 0, "painted mycelium next to soil should join the growth frontier");
+
+    let before = mycelium_count(&w);
+    for _ in 0..300 {
+        w.step();
+    }
+    let after = mycelium_count(&w);
+    assert!(after > before, "painted mycelium on soil should spread ({before} -> {after})");
+}
+
+#[test]
+fn painted_mycelium_in_open_bridges() {
+    // Regression: seed_frontier_around (called by World::paint for Mycelium) only enqueued a
+    // painted cell via has_colonizable_neighbor (Soil-only neighbors). Mycelium painted where
+    // its only neighbors are Empty (open air) never entered the frontier and stayed a
+    // permanently inert blob, unlike normal colonization which can bridge into empty space.
+    let mut w = World::new(64, 64);
+    // A mycelium blob painted entirely in open air: no Soil, no pre-existing mycelium nearby.
+    w.paint(32, 32, 2, Material::Mycelium as u8);
+    assert!(
+        w.frontier_len() > 0,
+        "painted mycelium with only empty neighbors should still join the frontier (bridging)"
+    );
+
+    let before = mycelium_count(&w);
+    for _ in 0..300 {
+        w.step();
+    }
+    let after = mycelium_count(&w);
+    assert!(after > before, "painted mycelium in open air should bridge and spread a little ({before} -> {after})");
 }
 
 #[test]

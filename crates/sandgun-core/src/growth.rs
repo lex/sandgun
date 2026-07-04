@@ -53,7 +53,13 @@ impl World {
         let y1 = ((cy + pad).max(0) as usize).min(self.height.saturating_sub(1));
         for y in y0..=y1 {
             for x in x0..=x1 {
-                if self.get(x, y) == Material::Mycelium && self.has_colonizable_neighbor(x, y) {
+                // Bridge-aware (not just Soil-only): mycelium painted where its only neighbors
+                // are Empty must still join the frontier so it can bridge, matching what normal
+                // colonization can already do. reach=0 since a freshly painted cell isn't yet
+                // known to be any particular distance from soil mass.
+                if self.get(x, y) == Material::Mycelium
+                    && self.has_colonizable_neighbor_or_bridge(x, y, 0)
+                {
                     self.push_frontier(FrontierCell { x, y, reach: 0 });
                 }
             }
@@ -135,8 +141,12 @@ impl World {
                 && self.mushrooms.len() < cap
                 && self.has_fruiting_room(fc.x, fc.y)
                 && self.chance(self.params.values[P_FRUIT_CHANCE])
+                && self.try_fruit(fc.x, fc.y)
             {
-                self.try_fruit(fc.x, fc.y);
+                // Only mark this cell as fruited if a mushroom actually spawned -- a cell whose
+                // footprint didn't fit (e.g. blocked by a neighboring mushroom) keeps its
+                // fruiting eligibility and can roll again on a later tick within its bounded
+                // window, instead of being silently locked out forever.
                 self.cells[ci].flags |= FLAG_FRUITED;
             }
             let grew = self.colonize_from(i);
@@ -253,26 +263,15 @@ impl World {
     /// cells [height, height + cap_area) are the cap dome around the stem top.
     fn reveal_mushroom(&mut self, i: usize, n: u16) -> bool {
         let m = self.mushrooms[i];
-        let stem = m.height as u16;
-        let r = m.cap_r as i32;
-        let cap_top_y = m.base_y as i32 - m.height as i32; // stem top; the dome's widest row
-        // The dome must sit atop the stem's ACTUAL (wandered) top, not the mushroom's base x.
-        let stem_top_x = m.x as i32 + stem_dx(m.sway_seed, stem.saturating_sub(1));
-        // Precompute the cap dome offsets in a stable order (top-down, left-right) for determinism.
-        let cap_cells = cap_dome(r); // Vec<(dx, dy)>
-        let total = stem + cap_cells.len() as u16;
+        // Same geometry the fruiting-time fit-check uses (see `mushroom_footprint`), so what
+        // gets drawn here always matches what was verified clear before this mushroom spawned.
+        let footprint = mushroom_footprint(m.x as i32, m.base_y as i32, m.height, m.cap_r, m.sway_seed);
+        let total = footprint.len() as u16;
 
         let mut revealed = 0;
         while revealed < n && m.progress + revealed < total {
             let p = m.progress + revealed;
-            let (cx, cy) = if p < stem {
-                // stem, bottom-up, gently wandering left/right as it rises (never more than
-                // 1 cell between consecutive heights, so it stays visually connected)
-                (m.x as i32 + stem_dx(m.sway_seed, p), m.base_y as i32 - 1 - p as i32)
-            } else {
-                let (dx, dy) = cap_cells[(p - stem) as usize];
-                (stem_top_x + dx, cap_top_y + dy)
-            };
+            let (cx, cy) = footprint[p as usize];
             if self.in_bounds(cx as isize, cy as isize) {
                 let cur = self.material_at(cx as isize, cy as isize);
                 // Only ever occupy Empty space -- growing into Soil (or anything else solid)
@@ -384,7 +383,10 @@ impl World {
         a
     }
 
-    /// Roll a parametric mushroom shape and enqueue it to grow from (x, y).
+    /// Roll a parametric mushroom shape and, if its whole footprint has room to grow, enqueue
+    /// it. Returns false (and spawns nothing) if any in-bounds footprint cell is already
+    /// occupied -- by another mushroom, terrain, or anything else non-Empty -- which is what
+    /// used to let adjacent mushrooms interleave/merge (Fix A).
     pub fn try_fruit(&mut self, x: usize, y: usize) -> bool {
         let hmin = self.params.values[P_MUSH_HEIGHT_MIN] as i32;
         let hmax = self.params.values[P_MUSH_HEIGHT_MAX] as i32;
@@ -393,6 +395,16 @@ impl World {
         let height = self.rand_range(hmin, hmax) as u8;
         let cap_r = self.rand_range(cmin, cmax) as u8;
         let sway_seed = self.next_rand();
+
+        let footprint = mushroom_footprint(x as i32, y as i32, height, cap_r, sway_seed);
+        let clear = footprint.iter().all(|&(cx, cy)| {
+            !self.in_bounds(cx as isize, cy as isize)
+                || self.material_at(cx as isize, cy as isize) == Material::Empty
+        });
+        if !clear {
+            return false;
+        }
+
         self.mushrooms.push(GrowingMushroom { x, base_y: y, height, cap_r, progress: 0, sway_seed });
         true
     }
@@ -404,6 +416,30 @@ impl World {
         }
         lo + (self.next_rand() as i32).rem_euclid(hi - lo + 1)
     }
+}
+
+/// All absolute (x, y) cells a mushroom with this shape occupies: the stem column (bottom-up,
+/// wandering per `stem_dx`) followed by the cap dome (per `cap_dome`, already bottom-up) atop
+/// the stem's ACTUAL wandered top. This is the single source of truth for a mushroom's
+/// footprint -- used both to check the whole shape is clear before fruiting (`try_fruit`) and
+/// to reveal it cell-by-cell as it grows (`reveal_mushroom`), so the two can never disagree.
+fn mushroom_footprint(x: i32, base_y: i32, height: u8, cap_r: u8, sway_seed: u32) -> Vec<(i32, i32)> {
+    let stem = height as u16;
+    let r = cap_r as i32;
+    let cap_top_y = base_y - height as i32; // stem top; the dome's widest row
+    let stem_top_x = x + stem_dx(sway_seed, stem.saturating_sub(1));
+    let cap_cells = cap_dome(r);
+
+    let mut cells = Vec::with_capacity(stem as usize + cap_cells.len());
+    for p in 0..stem {
+        // bottom-up, gently wandering left/right as it rises (never more than 1 cell between
+        // consecutive heights, so it stays visually connected)
+        cells.push((x + stem_dx(sway_seed, p), base_y - 1 - p as i32));
+    }
+    for (dx, dy) in cap_cells {
+        cells.push((stem_top_x + dx, cap_top_y + dy));
+    }
+    cells
 }
 
 /// Deterministic, bounded horizontal wander for a mushroom stem, seeded per-mushroom so stems
@@ -425,11 +461,12 @@ fn stem_dx(seed: u32, p: u16) -> i32 {
 }
 
 /// Upper-hemisphere dome of radius r as (dx, dy) offsets, deterministic order (row-major
-/// top-down). dy runs from -r (the apex) to 0 (the widest row), so the dome sits ON TOP of
-/// the stem -- widest at the stem top, curving up to a point -- instead of a full sphere.
+/// bottom-up). dy runs from 0 (the widest row, flush against the stem top) to -r (the apex),
+/// so the dome reveals grounded-first: the widest row fills in before the rows curving up
+/// above it, instead of the apex appearing to float in open air before the rest connects.
 fn cap_dome(r: i32) -> Vec<(i32, i32)> {
     let mut cells = Vec::new();
-    for dy in -r..=0 {
+    for dy in (-r..=0).rev() {
         for dx in -r..=r {
             if dx * dx + dy * dy <= r * r {
                 cells.push((dx, dy));
@@ -437,4 +474,23 @@ fn cap_dome(r: i32) -> Vec<(i32, i32)> {
         }
     }
     cells
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cap_dome;
+
+    #[test]
+    fn cap_reveals_from_bottom_up() {
+        // Regression: cap_dome used to order dy from -r (apex) to 0 (widest row), so the very
+        // first cells revealed were the apex, floating above the stem top before the rest of
+        // the dome filled in. The dome must reveal bottom-up (grounded on the stem top first).
+        let r = 5;
+        let cells = cap_dome(r);
+        assert!(!cells.is_empty());
+        let first = cells.first().unwrap();
+        let last = cells.last().unwrap();
+        assert_eq!(first.1, 0, "first cap cell revealed should be on the widest row (dy == 0), atop the stem");
+        assert_eq!(last.1, -r, "last cap cell revealed should be the apex (dy == -r)");
+    }
 }

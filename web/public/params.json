@@ -34,5 +34,6 @@
   "puff_interval": 120,
   "puff_spores": 5,
   "reseed_chance": 0.1,
-  "gunfire_spore_chance": 0.5
+  "gunfire_spore_chance": 0.5,
+  "ash_chance": 0.25
 }

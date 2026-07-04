@@ -10,7 +10,7 @@ const INDEX = {
   water_accel: 23, maturity: 24, max_mushrooms: 25, fruit_chance: 26,
   mush_height_min: 27, mush_height_max: 28, mush_cap_min: 29, mush_cap_max: 30,
   mush_reveal: 31, puff_interval: 32, puff_spores: 33, reseed_chance: 34,
-  gunfire_spore_chance: 35,
+  gunfire_spore_chance: 35, ash_chance: 36,
 };
 
 export async function loadParams(world) {
