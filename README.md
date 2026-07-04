@@ -29,4 +29,4 @@ Worlds are procedurally generated; painting is a debug tool.
 - **[** / **]** — brush radius down / up
 - **N** — regenerate a new world (random seed)
 - **P** — hot-reload `web/public/params.json` (tune fire/acid without rebuilding)
-- **D** — toggle debug overlay (active-chunk boxes, cells-processed count)
+- **`` ` ``** — toggle debug overlay (active-chunk boxes, cells-processed count)

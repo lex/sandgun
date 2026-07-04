@@ -29,9 +29,8 @@ export function attachInput(canvas, worldW, worldH) {
     if (k in KEYS) input.material = KEYS[k];
     if (k === '[') input.radius = Math.max(1, input.radius - 1);
     if (k === ']') input.radius = Math.min(24, input.radius + 1);
-    // guard with !e.repeat: 'd' now doubles as the right-move key, which is
-    // held down while walking and would otherwise spam-toggle the overlay
-    if (k === 'd' && !e.repeat) input.debug = !input.debug;
+    // guard with !e.repeat to prevent toggle-spam from held keys
+    if (k === '`' && !e.repeat) input.debug = !input.debug;
     if (k === 'n' && !e.repeat) input.regen = true;
     if (k === 'p' && !e.repeat) input.reloadParams = true;
     if (k === 'a' || k === 'arrowleft') input.left = true;
