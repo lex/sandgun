@@ -97,18 +97,38 @@ fn mycelium_bridges_a_small_gap_but_not_open_air() {
 
 #[test]
 fn bridging_respects_max_reach() {
-    // mycelium on a single soil pillar with open air beside it, max_reach small
+    // Full-width rock floor at y=50, with a 4-wide soil block resting directly on it
+    // at y=49 (x=10..=13). update_powder only moves a powder cell into an Empty cell
+    // straight down or down-diagonally; here every cell in row 50 across the whole
+    // width is Rock, so for every soil cell in the block, straight-down AND both
+    // down-diagonals are non-empty (Rock). No soil cell can ever fall or avalanche —
+    // this isolates the pure reach-counter cap with no soil-shedding side channel.
     let mut w = World::new(64, 64);
     w.set_param(sandgun_core::params::P_MAX_REACH as u32, 2.0);
-    w.paint(10, 50, 0, Material::Rock as u8); // floor so the pillar can't avalanche under gravity
-    for y in 30..50 {
-        w.paint(10, y, 0, Material::Soil as u8); // a vertical soil pillar
+    for x in 0..64 {
+        w.paint(x, 50, 0, Material::Rock as u8); // solid floor across the whole width
     }
-    w.paint(10, 40, 0, Material::Mycelium as u8);
+    for x in 10..=13 {
+        w.paint(x, 49, 0, Material::Soil as u8); // a 4-wide soil block resting on the floor
+    }
+    // Sanity: the block is stationary before we seed growth.
+    for _ in 0..10 {
+        w.step();
+    }
+    for x in 10..=13 {
+        assert_eq!(w.get(x, 49), Material::Soil, "soil block must not avalanche before seeding");
+    }
+
+    w.paint(13, 49, 0, Material::Mycelium as u8); // seed at the block's right edge
     w.seed_frontier();
     for _ in 0..800 {
         w.step();
     }
-    // mycelium may reach at most 2 empty cells right of the pillar (x=11,12), never x=14
-    assert_eq!(w.get(14, 40), Material::Empty, "reach cap must stop bridging at 2 cells");
+    // The seed sits at x=13 (part of the soil mass). With P_MAX_REACH=2, mycelium may
+    // bridge empty cells at most 2 cells beyond the mass: x=14 (reach 1) and x=15
+    // (reach 2). x=16 (reach would be 3) and x=17 (reach would be 4) are both beyond
+    // the cap and must remain Empty — a non-coincidental margin on both sides of the cap.
+    assert_eq!(w.get(14, 49), Material::Mycelium, "bridging must have happened at all");
+    assert_eq!(w.get(16, 49), Material::Empty, "reach cap must stop bridging beyond 2 cells");
+    assert_eq!(w.get(17, 49), Material::Empty, "reach cap must stop bridging beyond 2 cells");
 }
