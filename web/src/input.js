@@ -12,7 +12,7 @@ export function attachInput(canvas, worldW, worldH) {
   const input = {
     down: false, x: 0, y: 0, px: null, py: null,
     material: M.SAND, radius: 4, debug: false, regen: false, reloadParams: false,
-    left: false, right: false, jump: false,
+    left: false, right: false, jump: false, capTicks: true,
     get status() { return `${NAMES[this.material]} r${this.radius}`; },
   };
   const toWorld = (e) => {
@@ -33,6 +33,7 @@ export function attachInput(canvas, worldW, worldH) {
     if (k === '`' && !e.repeat) input.debug = !input.debug;
     if (k === 'n' && !e.repeat) input.regen = true;
     if (k === 'p' && !e.repeat) input.reloadParams = true;
+    if (k === 't' && !e.repeat) input.capTicks = !input.capTicks;
     if (k === 'a' || k === 'arrowleft') input.left = true;
     if (k === 'd' || k === 'arrowright') input.right = true;
     if (k === 'w' || k === 'arrowup' || k === ' ') input.jump = true;

@@ -3,7 +3,8 @@ export function drawOverlay(octx, world, wasm, input, fps, gun) {
   octx.clearRect(0, 0, w, h);
   octx.font = '10px monospace';
   octx.fillStyle = '#9f9';
-  octx.fillText(`${fps.toFixed(0)} fps · ${input.status}${gun ? ` · ${gun.status}` : ''}${input.debug ? ` · ${world.cells_processed()} cells` : ''}`, 6, 12);
+  const rate = input.capTicks ? '60hz' : 'uncap';
+  octx.fillText(`${fps.toFixed(0)} fps · ${rate} · ${input.status}${gun ? ` · ${gun.status}` : ''}${input.debug ? ` · ${world.cells_processed()} cells` : ''}`, 6, 12);
   if (!input.debug) return;
   const cw = w / world.chunks_x(), ch = h / world.chunks_y();
   const active = new Uint8Array(wasm.memory.buffer, world.active_ptr(), world.active_len());
