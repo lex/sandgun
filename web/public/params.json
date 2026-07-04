@@ -33,5 +33,6 @@
   "mush_reveal": 2,
   "puff_interval": 120,
   "puff_spores": 5,
-  "reseed_chance": 0.1
+  "reseed_chance": 0.1,
+  "gunfire_spore_chance": 0.5
 }

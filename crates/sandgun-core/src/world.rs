@@ -3,8 +3,8 @@ use crate::cell::{Cell, Material, FLAG_BURNING};
 use crate::growth::{FrontierCell, GrowingMushroom};
 use crate::params::{
     Params, P_ACID_BLOB_RADIUS, P_ACID_ETCH, P_ACID_ETCH_ROCK, P_FIRE_FLICKER, P_FIRE_LIFETIME,
-    P_INCENDIARY_RADIUS, P_KINETIC_EJECTA, P_KINETIC_RADIUS, P_SMOKE_EMIT, P_SMOKE_LIFETIME,
-    P_SPORE_BLOB_RADIUS,
+    P_GUNFIRE_SPORE_CHANCE, P_INCENDIARY_RADIUS, P_KINETIC_EJECTA, P_KINETIC_RADIUS, P_SMOKE_EMIT,
+    P_SMOKE_LIFETIME, P_SPORE_BLOB_RADIUS,
 };
 use crate::particle::Particle;
 use crate::projectile::{Ammo, Projectile};
@@ -459,13 +459,14 @@ impl World {
                     let mat = self.cells[i].material;
                     self.spawn_particle(x as f32 + 0.5, y as f32 + 0.5, ang.cos() * spd, ang.sin() * spd - 1.0, mat);
                 }
-                if m == Material::MushroomFlesh
-                    && self.chance((self.params.values[crate::params::P_PUFF_SPORES] / 8.0).min(1.0))
+                if m == Material::MushroomFlesh && self.chance(self.params.values[P_GUNFIRE_SPORE_CHANCE])
                 {
-                    self.cells[i].material = Material::SporeGas as u8;
-                    self.cells[i].aux = Material::SporeGas.initial_aux();
+                    let shade = (self.next_rand() & 3) as u8;
+                    self.cells[i] = Cell::new(Material::SporeGas, shade);
                     self.wake(ux, uy);
-                    continue; // leave spore gas instead of empty this cell
+                    continue; // leave spore gas instead of empty this cell; flags cleared so a
+                              // carved cell that was mid-burn (flesh ignited by a spreading fire)
+                              // doesn't inherit FLAG_BURNING with aux=0 and phantom-detonate next tick
                 }
                 self.cells[i] = Cell::default();
                 self.wake(ux, uy);

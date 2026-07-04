@@ -250,6 +250,59 @@ fn shooting_mushroom_flesh_releases_spores() {
     assert!(spore_count(&w) > spores_before, "popping mushroom flesh should release spore gas");
 }
 
+#[test]
+fn burning_flesh_puffs_non_burning_spores() {
+    // Regression: carve_crater must fully reset a carved MushroomFlesh cell's state when it
+    // leaves SporeGas behind. If flags (specifically FLAG_BURNING) survive the conversion, the
+    // fresh spore cell has aux=0 (SporeGas's initial aux) but is still flagged burning, so the
+    // very next tick's dispatch checks FLAG_BURNING before material, routes to update_burning,
+    // sees aux==0 ("fuel spent"), and detonates SporeGas -> Fire with no real fire nearby.
+    let mut w = World::new(64, 64);
+    w.set_param(sandgun_core::params::P_GUNFIRE_SPORE_CHANCE as u32, 1.0); // always puff on carve
+    w.set_param(sandgun_core::params::P_FLAM_FLESH as u32, 1.0); // guarantee ignition on contact
+
+    // A single mushroom flesh cell, ignited via the normal fire-spread path (not by poking
+    // flags directly) so this reproduces the real "fire already spread to a colony" scenario.
+    w.paint(25, 32, 0, Material::MushroomFlesh as u8);
+    w.paint(24, 32, 0, Material::Fire as u8); // adjacent flame catches the flesh next step
+    w.step();
+    assert_ne!(w.cell_flags(25, 32) & sandgun_core::cell::FLAG_BURNING, 0, "setup: flesh should have caught fire");
+
+    // Remove the igniting fire so nothing but the burning flesh cell remains nearby.
+    w.paint(24, 32, 0, Material::Empty as u8);
+
+    // Shoot a Kinetic round into the still-burning flesh cell (travels 20 world units in a
+    // single ray-march call, so the impact + carve resolve within this next step()).
+    w.fire(5.0, 32.0, 20.0, 0.0, 0); // Kinetic = 0
+    w.step();
+
+    // Immediately after the impact resolves (before any spore could legitimately meet fire),
+    // the carved cell must not be a pre-burning spore.
+    assert_eq!(w.get(25, 32), Material::SporeGas, "carving a burning flesh cell should leave spore gas");
+    assert_eq!(
+        w.cell_flags(25, 32) & sandgun_core::cell::FLAG_BURNING,
+        0,
+        "a freshly carved spore cell must not inherit FLAG_BURNING from the flesh it replaced"
+    );
+
+    // And it must not phantom-detonate on the following tick with no real fire nearby (checked
+    // world-wide since a rising spore gas cell may have drifted off its carve coordinates).
+    w.step();
+    assert_eq!(fire_count(&w), 0, "a carved spore cell must not self-detonate absent real fire");
+}
+
+fn fire_count(w: &World) -> usize {
+    let mut n = 0;
+    for y in 0..w.height {
+        for x in 0..w.width {
+            if w.get(x, y) == Material::Fire {
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
 fn spore_count(w: &World) -> usize {
     let mut n = 0;
     for y in 0..w.height {
