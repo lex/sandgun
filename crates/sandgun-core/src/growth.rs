@@ -78,9 +78,29 @@ impl World {
                 self.frontier.swap_remove(i);
                 continue;
             }
+            // Age the living cell toward fruiting maturity (aux is free until it burns).
+            let ci = self.idx(fc.x, fc.y);
+            if self.cells[ci].flags & FLAG_BURNING == 0 {
+                self.cells[ci].aux = self.cells[ci].aux.saturating_add(1);
+            }
+            // Fruit: mature, under the global cap, on a die roll.
+            let maturity = self.params.values[P_MATURITY] as u8;
+            let cap = self.params.values[P_MAX_MUSHROOMS] as usize;
+            if self.cells[ci].aux >= maturity
+                && self.mushrooms.len() < cap
+                && self.chance(self.params.values[P_FRUIT_CHANCE])
+            {
+                self.try_fruit(fc.x, fc.y);
+            }
             let grew = self.colonize_from(i);
-            if !self.has_colonizable_neighbor_or_bridge(fc.x, fc.y, fc.reach) {
-                self.frontier.swap_remove(i); // exhausted -> retire
+            // An exhausted cell (no more soil/empty to colonize) still loiters in the
+            // frontier until it reaches fruiting maturity, so isolated interior mycelium
+            // keeps aging after its immediate neighborhood is fully colonized. Once mature
+            // it retires for good (it has already had its fruiting roll for this tick).
+            if !self.has_colonizable_neighbor_or_bridge(fc.x, fc.y, fc.reach)
+                && self.cells[ci].aux >= maturity
+            {
+                self.frontier.swap_remove(i); // exhausted and mature -> retire
             } else {
                 i += 1;
             }
@@ -169,5 +189,25 @@ impl World {
             a.swap(k, j);
         }
         a
+    }
+
+    /// Roll a parametric mushroom shape and enqueue it to grow from (x, y).
+    pub fn try_fruit(&mut self, x: usize, y: usize) -> bool {
+        let hmin = self.params.values[P_MUSH_HEIGHT_MIN] as i32;
+        let hmax = self.params.values[P_MUSH_HEIGHT_MAX] as i32;
+        let cmin = self.params.values[P_MUSH_CAP_MIN] as i32;
+        let cmax = self.params.values[P_MUSH_CAP_MAX] as i32;
+        let height = self.rand_range(hmin, hmax) as u8;
+        let cap_r = self.rand_range(cmin, cmax) as u8;
+        self.mushrooms.push(GrowingMushroom { x, base_y: y, height, cap_r, progress: 0 });
+        true
+    }
+
+    /// Inclusive random integer in [lo, hi] using the sim RNG. lo<=hi assumed; falls back to lo.
+    pub(crate) fn rand_range(&mut self, lo: i32, hi: i32) -> i32 {
+        if hi <= lo {
+            return lo;
+        }
+        lo + (self.next_rand() as i32).rem_euclid(hi - lo + 1)
     }
 }

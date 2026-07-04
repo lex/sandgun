@@ -132,3 +132,29 @@ fn bridging_respects_max_reach() {
     assert_eq!(w.get(16, 49), Material::Empty, "reach cap must stop bridging beyond 2 cells");
     assert_eq!(w.get(17, 49), Material::Empty, "reach cap must stop bridging beyond 2 cells");
 }
+
+#[test]
+fn undisturbed_mycelium_ages_toward_maturity() {
+    let mut w = soil_world();
+    w.paint(64, 90, 0, Material::Mycelium as u8);
+    w.seed_frontier();
+    for _ in 0..300 {
+        w.step();
+    }
+    // the original seed has been alive the whole time -> its aux age climbed
+    assert!(w.cell_aux(64, 90) >= 90, "mature mycelium should have high aux age");
+}
+
+#[test]
+fn mature_mycelium_fruits_a_mushroom_under_the_cap() {
+    let mut w = soil_world();
+    w.set_param(sandgun_core::params::P_FRUIT_CHANCE as u32, 1.0); // force fruiting when eligible
+    w.set_param(sandgun_core::params::P_MATURITY as u32, 10.0);
+    w.paint(64, 90, 0, Material::Mycelium as u8);
+    w.seed_frontier();
+    for _ in 0..200 {
+        w.step();
+    }
+    assert!(w.mushroom_len() >= 1, "a mature patch should fruit");
+    assert!(w.mushroom_len() <= 6, "must respect the global mushroom cap (default 6)");
+}
