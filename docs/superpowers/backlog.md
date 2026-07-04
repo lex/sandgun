@@ -154,3 +154,17 @@ guards the integration layer the Rust tests can't reach. Shape:
 **Sequencing:** do this as its own small milestone/task BEFORE M1d (big world + camera),
 so the camera/scrolling work has integration coverage to land against. Not blocking M1c.
 The throwaway M1c acceptance script (in scratchpad) is a good starting template to salvage.
+
+## Unconnected mycelium should die off or drop (raised by Lex, 2026-07-04 playtest)
+
+Mycelium that bridged into empty and then got severed from soil/water/mass shouldn't float
+in the air forever. Lex: "not instantly but after some time maybe. or just drop down."
+Two candidate behaviors (design fork — asked Lex):
+- (A) DECAY: unsupported/disconnected mycelium ages and dies (→ Empty or Ash) after a delay.
+- (B) DROP: it detaches and falls as particles/powder (pixels-as-particles) and resettles.
+Connectivity is the hard part for chunk-sleep: a full "is this cell connected to soil/water"
+flood-fill is world-size cost. Cheaper proxies: (a) reuse the bridge `reach` — a cell whose
+supporting mass was removed can't be cheaply told locally; (b) a periodic budgeted support
+check only on frontier/recently-changed cells; (c) simplest — any Mycelium cell with NO
+solid/soil neighbor for N ticks decays/drops (local check, cheap, runs only on woken cells).
+Leaning (c) local-neighbor rule + delay. Needs its own small task; watch chunk-sleep.
