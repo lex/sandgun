@@ -1,5 +1,6 @@
 use crate::avatar::Avatar;
 use crate::cell::{Cell, Material, FLAG_BURNING};
+use crate::growth::{FrontierCell, GrowingMushroom};
 use crate::params::{
     Params, P_ACID_BLOB_RADIUS, P_ACID_ETCH, P_ACID_ETCH_ROCK, P_FIRE_FLICKER, P_FIRE_LIFETIME,
     P_INCENDIARY_RADIUS, P_KINETIC_EJECTA, P_KINETIC_RADIUS, P_SMOKE_EMIT, P_SMOKE_LIFETIME,
@@ -39,6 +40,9 @@ pub struct World {
     pub(crate) particles: Vec<Particle>,
     pub(crate) projectiles: Vec<Projectile>,
     pub(crate) avatar: Option<Avatar>,
+    pub(crate) frontier: Vec<FrontierCell>,
+    pub(crate) mushrooms: Vec<GrowingMushroom>,
+    pub(crate) grow_countdown: u32,
 }
 
 impl World {
@@ -62,6 +66,9 @@ impl World {
             particles: Vec::new(),
             projectiles: Vec::new(),
             avatar: None,
+            frontier: Vec::new(),
+            mushrooms: Vec::new(),
+            grow_countdown: 0,
         }
     }
 
@@ -310,6 +317,12 @@ impl World {
                 }
             }
         }
+        // Budgeted growth on the P_GROWTH_INTERVAL cadence (chunk-sleep safe: grow() no-ops when idle).
+        if self.grow_countdown == 0 {
+            self.grow();
+            self.grow_countdown = (self.params.values[crate::params::P_GROWTH_INTERVAL] as u32).max(1);
+        }
+        self.grow_countdown -= 1;
         self.update_projectiles();
         self.update_particles();
         self.update_avatar();
