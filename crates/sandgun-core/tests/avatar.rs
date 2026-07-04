@@ -1,4 +1,5 @@
 use sandgun_core::cell::Material;
+use sandgun_core::projectile::Ammo;
 use sandgun_core::world::World;
 
 #[test]
@@ -137,4 +138,40 @@ fn avatar_does_not_add_sim_work_when_resting() {
     }
     w.step();
     assert_eq!(w.cells_processed, 0, "a resting avatar writes no cells and keeps the world asleep");
+}
+
+#[test]
+fn all_entity_kinds_settle_to_sleep() {
+    // Guard the milestone's core invariant: with avatar, projectile, AND free particles all live
+    // simultaneously, once everything settles and all transient entities are gone, the world
+    // must return to cells_processed == 0 (fully asleep).
+    let mut w = World::new(64, 64);
+
+    // Build a solid floor so entities have something to land on
+    for x in 0..64 {
+        w.paint(x, 50, 0, Material::Rock as u8);
+    }
+
+    // Spawn an avatar above the floor
+    w.spawn_avatar(30.0, 5.0);
+
+    // Fire a projectile (kinetic ammo, non-zero velocity) toward the floor
+    w.fire(10.0, 32.0, 6.0, 0.0, Ammo::Kinetic as u8);
+
+    // Spawn a few free particles with small velocities
+    w.spawn_particle(20.0, 10.0, 1.0, 0.0, Material::Sand as u8);
+    w.spawn_particle(25.0, 15.0, -1.0, 0.0, Material::Sand as u8);
+    w.spawn_particle(35.0, 20.0, 0.5, -0.5, Material::Sand as u8);
+
+    // Step enough frames for everything to fully settle and all transient entities
+    // (projectile impacts, particles) to die and the avatar to rest on the floor
+    for _ in 0..600 {
+        w.step();
+    }
+
+    // One more step to check that the world is asleep
+    w.step();
+
+    // After settling, the world must return to cells_processed == 0
+    assert_eq!(w.cells_processed, 0, "with avatar, projectile, and particles all live and settled, world must be fully asleep");
 }
