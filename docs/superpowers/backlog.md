@@ -168,3 +168,17 @@ supporting mass was removed can't be cheaply told locally; (b) a periodic budget
 check only on frontier/recently-changed cells; (c) simplest — any Mycelium cell with NO
 solid/soil neighbor for N ticks decays/drops (local check, cheap, runs only on woken cells).
 Leaning (c) local-neighbor rule + delay. Needs its own small task; watch chunk-sleep.
+
+**Species = color, not new material (Lex, 2026-07-04):** simplest species model — keep ONE
+MushroomFlesh (and one Mycelium) material; species differ only by COLOR/pattern at render.
+E.g. Amanita muscaria = red cap with white specks; others white / brown / etc. Store the
+species tag in the cell's `shade` byte (a few species ids); the renderer maps species→palette
+(and can add speck patterns, e.g. deterministic white dots on a red cap via cell position +
+shade). No new material ids, no new growth rules needed for basic variety — pure render layer.
+Growth rules could later bias which species by substrate/moisture, but visual variety is free.
+
+## Latent: stale FrontierCell if a cell's material is externally toggled (found M1c fix, 2026-07-04)
+Externally flipping a colonized cell between Soil/Mycelium mid-run (e.g. paint over it) can
+leave a stale FrontierCell entry that gets double/triple-processed in one tick if re-colonized
+before the loop reaches it. Doesn't occur in normal gameplay (material isn't reset like that),
+so out of scope, but note if a future feature mutates cells under an active frontier.
