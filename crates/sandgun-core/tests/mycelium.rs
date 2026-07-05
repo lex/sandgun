@@ -386,6 +386,70 @@ fn severed_mycelium_bridge_falls() {
 }
 
 #[test]
+fn acid_ammo_severs_mycelium_bridge_and_far_side_falls() {
+    // Same setup/shape as severed_mycelium_bridge_falls, but severing with Acid ammo instead of
+    // Kinetic. inject_blob (the Acid impact path) can overwrite Mycelium, and unlike
+    // carve_crater it must also trigger the support check -- otherwise a Rock-anchored bridge
+    // severed by acid leaves the far side floating as inert Mycelium forever.
+    let mut w = World::new(64, 64);
+    w.paint(5, 32, 0, Material::Rock as u8); // anchor
+    // a long mycelium bridge from the anchor (x=6, touching the rock) out to a floating far end
+    for x in 6..40 { w.paint(x as i32, 32, 0, Material::Mycelium as u8); }
+    let particles_before = w.particle_count();
+    // fire acid straight down into the middle of the bridge (x=23), splitting it in two
+    w.fire(23.5, 27.0, 0.0, 8.0, Ammo::Acid as u8);
+    w.step(); // impact + inject_blob + the resulting support check, all this frame
+    assert!(
+        w.particle_count() > particles_before,
+        "the disconnected far piece should become falling particles"
+    );
+    for _ in 0..400 { w.step(); } // let debris fall/settle
+    // near side (still connected to the rock through x=6) should remain
+    assert!(
+        (6..15).any(|x| w.get(x, 32) == Material::Mycelium),
+        "the side still connected to the anchor should stay put"
+    );
+    // far side (was disconnected by the acid blob, no anchor within reach) should have fallen away
+    for x in 30..39 {
+        assert_ne!(
+            w.get(x, 32),
+            Material::Mycelium,
+            "disconnected piece at x={x} should have fallen, not stayed in place"
+        );
+    }
+}
+
+#[test]
+fn acid_erosion_of_soil_anchor_strands_mycelium() {
+    // update_acid's per-tick erosion (not ammo impact) dissolves cells one at a time. Here the
+    // ONLY anchor for a mycelium strand is a single Soil cell; acid sitting on top of it erodes
+    // that soil away over several ticks. Once the soil is gone, the whole strand -- never
+    // directly touched by the acid -- has lost its only anchor and must be dropped, same as if
+    // it had been carved or burned away.
+    let mut w = World::new(64, 64);
+    // Rock directly under the soil only -- keeps the soil from falling under its own gravity
+    // (Soil is a powder) without being itself D4-adjacent to any mycelium cell, so it can't
+    // serve as a second anchor once the soil above it is gone.
+    w.paint(10, 33, 0, Material::Rock as u8);
+    w.paint(10, 32, 0, Material::Soil as u8); // the sole anchor
+    for x in 11..30 { w.paint(x as i32, 32, 0, Material::Mycelium as u8); }
+    w.paint(10, 31, 0, Material::Acid as u8); // resting directly on top of the soil anchor
+    // let the acid eat through the soil anchor (bounded by its own dissolve-charge budget), then
+    // give any resulting drop plenty of time to fall and settle
+    for _ in 0..900 {
+        w.step();
+    }
+    assert_ne!(w.get(10, 32), Material::Soil, "acid should have dissolved the sole anchor by now");
+    for x in 11..29 {
+        assert_ne!(
+            w.get(x, 32),
+            Material::Mycelium,
+            "strand at x={x} lost its only anchor to erosion and should have fallen, not stayed"
+        );
+    }
+}
+
+#[test]
 fn anchored_mycelium_stays() {
     let mut w = World::new(64, 64);
     w.paint(5, 32, 0, Material::Rock as u8); // anchor

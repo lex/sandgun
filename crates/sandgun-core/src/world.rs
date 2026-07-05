@@ -526,6 +526,7 @@ impl World {
     }
 
     fn inject_blob(&mut self, cx: isize, cy: isize, radius: isize, material: Material) {
+        let mut overwrote_mycelium_or_flesh = false;
         for dy in -radius..=radius {
             for dx in -radius..=radius {
                 if dx * dx + dy * dy > radius * radius {
@@ -541,10 +542,19 @@ impl World {
                 // fill empty; acid/spore also eat into soft organics/soil, not rock
                 let soft = matches!(dst, Material::Soil | Material::Sand | Material::Mycelium);
                 if dst == Material::Empty || soft {
+                    if matches!(dst, Material::Mycelium | Material::MushroomFlesh) {
+                        overwrote_mycelium_or_flesh = true;
+                    }
                     self.cells[i] = Cell::new(material, (self.next_rand() & 3) as u8);
                     self.wake(ux, uy);
                 }
             }
+        }
+        // Task 5 (M1e final review): a blob (Acid ammo) can overwrite Mycelium/MushroomFlesh just
+        // like carve_crater carves it away -- run the same support check, same radius convention
+        // (blob radius + 2 so the flood's seed search reaches the surviving cells at the edge).
+        if overwrote_mycelium_or_flesh {
+            self.drop_unsupported_around(cx, cy, radius + 2);
         }
     }
 
@@ -876,12 +886,20 @@ impl World {
         // try to dissolve one random 4-neighbor
         let (nx, ny) = dirs[(self.next_rand() % 4) as usize];
         if self.in_bounds(nx, ny) {
-            let p = self.acid_etch_chance(self.material_at(nx, ny));
+            let target = self.material_at(nx, ny);
+            let p = self.acid_etch_chance(target);
             if p > 0.0 && self.chance(p) {
                 let ni = self.idx(nx as usize, ny as usize);
                 self.cells[ni] = Cell::default();
                 self.stamp[ni] = self.frame_u8();
                 self.wake(nx as usize, ny as usize);
+                // Task 5 (M1e final review): dissolving a Mycelium/MushroomFlesh cell directly,
+                // or a Soil cell that was anchoring nearby mycelium, can strand a connected mass
+                // just like a burned-away cell does -- same check, same small radius since only
+                // one cell was removed.
+                if matches!(target, Material::Mycelium | Material::MushroomFlesh | Material::Soil) {
+                    self.drop_unsupported_around(nx, ny, 2);
+                }
                 let i = self.idx(x, y);
                 if self.cells[i].aux <= 1 {
                     self.cells[i] = Cell::default(); // spent
