@@ -278,3 +278,15 @@ redesign cluster.
   mycelium color (white base), species-as-color. GRILL before building.
 - Projectile-detonates-on-own-fire bug = FIX SOON, STANDALONE (being done now).
 - Everything else in round 3 = deferred into the M1e redesign (don't build twice).
+
+## Worldgen rework — too much rock, not enough soil; predefined formations (Lex, 2026-07-05)
+Current worldgen (worldgen.rs) is random noise, ROCK-HEAVY — not enough Soil for mycelium to
+grow in. Two horizons:
+- **NEAR-TERM (fold into M1e Task 6 or a quick follow-up):** rebalance the soil:rock ratio so
+  colonies have substrate to eat — M1e's kill criterion depends on it. At minimum, more soil
+  strata / soil-filled caverns, fewer solid rock walls. Cheap tuning of the existing generator.
+- **LATER (own milestone/grilling):** Noita-style hand-authored PREDEFINED FORMATIONS +
+  nice traversable caverns, instead of pure noise. Structured level design: template chunks
+  (rooms, tunnels, biomes) stamped into the world, connected caverns to move through. Bigger
+  worldgen redesign; likely pairs with M1d (big world + camera) since level structure matters
+  most at real scale.
