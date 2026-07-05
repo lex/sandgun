@@ -123,8 +123,16 @@ impl World {
 
     /// Budgeted growth tick. Called from step() on the P_GROWTH_INTERVAL cadence.
     /// Returns immediately when there is nothing alive to grow (chunk-sleep safe).
+    ///
+    /// Mushroom reveal/decay is owned solely by the new `grow_mycelium` path (mycelium.rs),
+    /// which already calls `grow_mushrooms` + `decay_mushrooms` once per its own cadence. This
+    /// old dormant frontier model must NOT also touch mushrooms/caps -- it used to, and because
+    /// both cadences default to the same interval and both countdowns start at 0, that fired the
+    /// reveal/puff twice per growth tick (see M1e task 4 review). The guard below depends only
+    /// on the frontier now (nothing seeds it in normal play, so this stays dormant) rather than
+    /// also keying off mushrooms/caps state that belongs to the other path.
     pub fn grow(&mut self) {
-        if self.frontier.is_empty() && self.mushrooms.is_empty() && self.caps.is_empty() {
+        if self.frontier.is_empty() {
             return;
         }
         let budget = self.params.values[P_GROWTH_BUDGET] as usize;
@@ -183,9 +191,9 @@ impl World {
             }
             let _ = grew;
         }
-        // Mushroom growth + puffs are added in Tasks 3-5; for now a no-op if empty.
-        self.grow_mushrooms();
-        self.puff_caps();
+        // Mushroom reveal/decay is NOT called here -- grow_mycelium (mycelium.rs) is the sole
+        // owner now (see the doc comment on this fn). Calling it here too was the double-reveal
+        // bug fixed in M1e task 4 review.
     }
 
     /// Reveal more of each growing mushroom this tick; retire finished ones.
@@ -284,6 +292,9 @@ impl World {
     /// Decrement each cap's puff countdown; at 0, emit a burst of SporeGas above the cap
     /// into Empty cells only, then either reset the countdown (more puffs remaining) or
     /// retire the cap (finite puffing keeps the world able to sleep once caps are spent).
+    /// No longer called (was old grow()'s cap-puff spore mechanic, an old-model concern being
+    /// removed wholesale in Task 6) -- kept for now rather than deleted, per that task's scope.
+    #[allow(dead_code)]
     fn puff_caps(&mut self) {
         let interval = (self.params.values[P_PUFF_INTERVAL] as u32).max(1);
         let spores = self.params.values[P_PUFF_SPORES] as i32;

@@ -391,7 +391,9 @@ fn mushroom_cap_reveals_bottom_row_before_apex() {
     w.set_param(sandgun_core::params::P_MUSH_CAP_MIN as u32, cap_r as f32);
     w.set_param(sandgun_core::params::P_MUSH_CAP_MAX as u32, cap_r as f32);
     w.set_param(sandgun_core::params::P_MUSH_REVEAL as u32, 1.0); // exactly one cell revealed per growth tick
-    w.set_param(sandgun_core::params::P_GROWTH_INTERVAL as u32, 1.0); // one growth tick per step
+    // Mushroom reveal is driven solely by grow_mycelium's cadence (M1e task 4 review fix), not
+    // the old grow()'s P_GROWTH_INTERVAL, so it's P_MY_GROWTH_INTERVAL that must be 1 here.
+    w.set_param(sandgun_core::params::P_MY_GROWTH_INTERVAL as u32, 1.0); // one growth tick per step
 
     let base_x = 32i32;
     let base_y = 59i32;

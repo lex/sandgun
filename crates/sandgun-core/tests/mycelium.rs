@@ -230,6 +230,33 @@ fn mushroom_decays_after_lifespan() {
 }
 
 #[test]
+fn mushroom_reveals_at_one_rate_not_double() {
+    // Regression (M1e task 4 review): both the old dormant grow() and the new grow_mycelium()
+    // called grow_mushrooms() on the same shared self.mushrooms/self.caps. Both cadences default
+    // to P_GROWTH_INTERVAL/P_MY_GROWTH_INTERVAL == 3 with countdowns starting at 0, so a single
+    // growth tick revealed 2x P_MUSH_REVEAL cells instead of 1x. grow_mycelium (mycelium.rs) is
+    // now the sole owner of mushroom reveal/decay.
+    let mut w = World::new(64, 64);
+    assert!(w.try_fruit(32, 40), "mushroom should fit in open space");
+    let reveal = w.params.values[sandgun_core::params::P_MUSH_REVEAL] as usize;
+    let before = count_material(&w, (64, 64), Material::MushroomFlesh);
+    assert_eq!(before, 0, "freshly fruited mushroom shouldn't have revealed any flesh yet");
+    // Step exactly one growth-interval's worth of frames. grow_countdown/my_grow_countdown both
+    // start at 0, so the growth tick(s) fire on the very first step and the cadence stays quiet
+    // for the rest of the interval -- this window contains exactly one tick from each cadence.
+    let interval = w.params.values[sandgun_core::params::P_GROWTH_INTERVAL] as usize;
+    for _ in 0..interval {
+        w.step();
+    }
+    let after = count_material(&w, (64, 64), Material::MushroomFlesh);
+    let revealed = after - before;
+    assert_eq!(
+        revealed, reveal,
+        "mushroom reveal must run once per growth tick (P_MUSH_REVEAL={reveal}), not twice (got {revealed})"
+    );
+}
+
+#[test]
 fn dieback_reverts_multiple_cells_per_tick() {
     let mut w = World::new(64, 64);
     // No branching, so there's exactly one tip growing one strand -- keeps the cell count
