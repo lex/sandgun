@@ -78,4 +78,7 @@ impl WasmWorld {
     pub fn tip_count(&self) -> usize {
         self.inner.tip_count()
     }
+    pub fn max_colony_pool(&self) -> u32 {
+        self.inner.max_colony_pool()
+    }
 }

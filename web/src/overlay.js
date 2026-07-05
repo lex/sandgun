@@ -6,7 +6,7 @@ export function drawOverlay(octx, world, wasm, input, fps, gun) {
   const rate = input.capTicks ? '60hz' : 'uncap';
   let growth = '';
   if (input.debug) {
-    growth = ` · colonies ${world.colony_count()} · tips ${world.tip_count()} · mush ${world.mushroom_count()}`;
+    growth = ` · colonies ${world.colony_count()} · tips ${world.tip_count()} · mush ${world.mushroom_count()} · pool ${world.max_colony_pool()}`;
   }
   octx.fillText(`${fps.toFixed(0)} fps · ${rate} · ${input.status}${gun ? ` · ${gun.status}` : ''}${input.debug ? ` · ${world.cells_processed()} cells${growth}` : ''}`, 6, 12);
   if (!input.debug) return;

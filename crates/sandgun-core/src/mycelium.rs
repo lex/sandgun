@@ -75,6 +75,12 @@ impl World {
     pub fn colony_pool(&self, id: u8) -> u32 {
         self.colonies.iter().find(|c| c.id == id).map(|c| c.nutrient_pool).unwrap_or(0)
     }
+    /// HUD passthrough: the largest nutrient pool among currently-alive colonies (0 if none are
+    /// alive). Gives a rough sense of feeding progress toward P_MY_FRUIT_THRESHOLD without the
+    /// HUD needing to know colony ids or iterate the colony list itself.
+    pub fn max_colony_pool(&self) -> u32 {
+        self.colonies.iter().filter(|c| c.alive).map(|c| c.nutrient_pool).max().unwrap_or(0)
+    }
     /// Test hook: directly set a colony's nutrient pool, for deterministic fruiting-trigger
     /// tests that don't want to wait out real eating. A no-op if the id doesn't exist.
     pub fn set_colony_pool(&mut self, id: u8, pool: u32) {

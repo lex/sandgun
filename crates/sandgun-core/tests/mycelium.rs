@@ -1,6 +1,7 @@
 use sandgun_core::cell::Material;
 use sandgun_core::projectile::Ammo;
 use sandgun_core::world::World;
+use sandgun_core::worldgen;
 
 #[test]
 fn soil_richness_roundtrips() {
@@ -917,4 +918,45 @@ fn mushroom_stems_vary_and_stay_connected() {
              ({last_stem_x}), not just the base x ({base_x})"
         );
     }
+}
+
+#[test]
+fn full_lifecycle_world_still_sleeps_after_settling() {
+    // M1e task 7 -- the milestone's kill-criterion regression test. Colonies (worldgen-seeded, so
+    // they grow, eat, branch, fruit, and recede live), the avatar, a fired projectile, AND free
+    // particles must all be able to be live in the SAME world at once, and once everything
+    // settles the world must go fully quiet: cells_processed == 0, no live tips left, no
+    // mushrooms left standing. This combines the colony-only guard
+    // (generated_world_fully_settles, tests/worldgen.rs) with the entity-only guard
+    // (all_entity_kinds_settle_to_sleep, tests/avatar.rs) into one scene, so a future regression
+    // that only breaks when everything is live simultaneously (e.g. an entity that keeps nudging
+    // a chunk awake near a growing/receding colony) gets caught.
+    let mut w = World::new(256, 192);
+    worldgen::generate(&mut w, 7);
+    assert!(w.colony_count() > 0, "worldgen should seed living colonies");
+
+    // Avatar, projectile, and particles are all dropped into open air well above the terrain:
+    // worldgen's surface heightline (worldgen::generate step 1) is clamped to at least h/5, so
+    // every column has open air from y=0 to at least y=38 in this 192-tall world -- y<=20 below
+    // is guaranteed clear of terrain regardless of x.
+    w.spawn_avatar(40.0, 10.0);
+    w.fire(120.0, 10.0, 6.0, 0.0, Ammo::Kinetic as u8);
+    w.spawn_particle(60.0, 15.0, 1.0, 0.0, Material::Sand as u8);
+    w.spawn_particle(90.0, 20.0, -1.0, 0.0, Material::Sand as u8);
+    w.spawn_particle(200.0, 12.0, 0.5, -0.5, Material::Sand as u8);
+
+    // Generous budget: colony-only settling alone takes ~4000 steps for this seed (see
+    // generated_world_fully_settles); entity-only settling alone takes a few hundred. 40000 gives
+    // wide margin without weakening the assertions below -- they are exact, not approximate.
+    for _ in 0..40_000 {
+        w.step();
+    }
+    w.step();
+
+    assert_eq!(w.tip_count(), 0, "all mycelium growth must finish (grow to completion or fully recede)");
+    assert_eq!(w.mushroom_len(), 0, "all mushrooms must finish (fruit, decay, or be consumed)");
+    assert_eq!(
+        w.cells_processed, 0,
+        "with colonies, avatar, a projectile, and particles all live at once, the world must fully settle to sleep"
+    );
 }
