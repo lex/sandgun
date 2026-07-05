@@ -307,3 +307,7 @@ box), and ANIMATED (walk cycle, idle, jump). Notes:
   needs no art assets; sprite sheet looks better but needs art.
 - Facing direction (from aim/velocity), walk vs idle vs jump/fall states from avatar flags.
 Own small task; can be standalone after M1e (or slot in whenever). Not blocking.
+
+## M1e carry-forwards (from final whole-branch review, 2026-07-05) — sharpened severity
+- **Colony Vec never reaped + id wraps at 255 = CUMULATIVE-ever, not concurrent.** spawn_colony id = colonies.len()+1 only grows; dead colonies stay in the Vec. Firing Spore ammo ~250+ times TOTAL over a session (not 250 alive at once) reissues ids → id-keyed lookups (colony_pool, tip_count, same-colony aux match) conflate two colonies = real correctness risk. Fix with the colony-cap/reap work (compact dead colonies, or cap concurrent colonies, or widen id). Do next after M1e merges.
+- **recede_tip aux-misread across burning transition.** adjacent_same_colony_mycelium reads Mycelium aux as colony-id, but a burning Mycelium cell's aux is a fuel countdown (aux triple-semantics collide only here, briefly). A tip receding through a strand whose adjacent segment is on fire treats the burning neighbor as foreign → may die early, stranding a cosmetic stub. Narrow window (fire+starve+recede overlap). Fix: also match a neighbor when flags&FLAG_BURNING && material==Mycelium. Same family as the tree-junction stub item.
