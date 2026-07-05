@@ -12,6 +12,7 @@ const INDEX = {
   my_growth_interval: 27, my_tip_cap: 28, my_eat: 29, my_fruit_threshold: 30,
   my_fruit_cost: 31, my_dieback: 32, my_branch_chance: 33, my_worldgen_colonies: 34,
   soil_richness_min: 35, soil_richness_max: 36, mush_lifespan: 37,
+  my_max_air_reach: 38, my_strand_width: 39,
 };
 
 export async function loadParams(world) {

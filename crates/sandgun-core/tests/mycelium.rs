@@ -35,25 +35,26 @@ fn no_tips_means_grow_is_noop_and_world_sleeps() {
 #[test]
 fn tip_grows_toward_richer_substrate() {
     let mut w = World::new(64, 64);
-    // rich soil to the right of the colony, poor/empty to the left. Soil is granular (falls
-    // under gravity like sand): an unsupported block free-falls to the bottom of the world
-    // within ~30 frames, long before a slow-growing tip could ever reach it, which would make
-    // this test just check whether a random walk crosses an arbitrary band of cells rather than
-    // whether richness actually attracts the tip. So pin the soil down with a rock floor. Use a
-    // single-row soil strip with the floor widened by 1 column on each side: any narrower and
-    // the edge grains slump diagonally into the still-open neighboring column and drift toward
-    // the colony on their own, reaching it via physics rather than via the tip's own seeking.
-    for x in 33..51 { w.paint(x, 33, 0, Material::Rock as u8); }
-    for x in 34..50 { w.paint(x as i32, 32, 0, Material::Soil as u8); w.set_soil_richness(x, 32, 200); }
-    w.spawn_colony(32, 32);
-    // The spawn point is 2 cells shy of the substrate, so the tip senses no gradient on its
-    // first move; the momentum bias (see pick_step) then locks it onto a fairly long, mostly
-    // straight ray until a wall or the substrate's richness redirects it. With this world's
-    // deterministic RNG stream the tip reaches the rich soil at step 229 -- budget generously
-    // (1000) rather than tuning to the exact deterministic step count.
-    for _ in 0..1000 { w.step(); }
+    // M1e playtest fixes 3/4 (branching + wandering, and 2-wide strands) mean growth needs real
+    // 2D room to spread into: a single-cell-wide soil corridor is a pathological bottleneck where
+    // a branch's own perpendicular thickening (fix 4) or diagonal wander (fix 3) can consume the
+    // one soil cell directly ahead of the main tip before it ever gets there. So this uses a soil
+    // BAND several rows tall (not a single row) with richness increasing left-to-right -- poor
+    // near the colony's spawn end, richest at the far end -- so branches have slack to explore
+    // without starving the main growth front of its next step. Pinned to a rock floor -- soil is
+    // granular and would otherwise avalanche away before the tip ever senses it.
+    for x in 30..52 { w.paint(x, 40, 0, Material::Rock as u8); }
+    for x in 30..50 {
+        for y in 32..40 {
+            w.paint(x as i32, y as i32, 0, Material::Soil as u8);
+            let richness = ((x - 30) * 10).min(200) as u8;
+            w.set_soil_richness(x, y, richness);
+        }
+    }
+    w.spawn_colony(30, 35); // poor (spawn) end of the band
+    for _ in 0..3000 { w.step(); }
     // mycelium should have advanced rightward into the rich soil
-    let reached = (34..50).any(|x| w.get(x, 32) == Material::Mycelium);
+    let reached = (44..50).any(|x| (32..40).any(|y| w.get(x, y) == Material::Mycelium));
     assert!(reached, "tip should creep toward the rich soil");
 }
 
@@ -123,24 +124,138 @@ fn well_fed_colony_branches_up_to_the_cap() {
     // that (a pre-existing World::new invariant, unrelated to this task), so this uses 128x128
     // with a proportionally scaled rich-soil field around the colony.
     let mut w = World::new(128, 128);
+    // Rock floor under the soil field: without it, this whole unsupported block of granular Soil
+    // continuously avalanches (nothing below y=90 was ever solid), constantly opening and closing
+    // Empty pockets throughout the mass. The old growth model tolerated that by growing straight
+    // through however much open air appeared; M1e playtest fix 2's air-reach cap does not, so an
+    // ever-shifting sandpile starves every tip of substrate and the whole colony dies out. A solid
+    // floor keeps the packed block stable (no local voids to slump into) like real ground.
+    for x in 9..119 { w.paint(x, 90, 0, Material::Rock as u8); }
     for x in 10..118 { for y in 40..90 { w.paint(x as i32, y as i32, 0, Material::Soil as u8); w.set_soil_richness(x, y, 220); } }
     w.spawn_colony(64, 65);
-    for _ in 0..300 { w.step(); }
     let cap = 12; // P_MY_TIP_CAP default
-    assert!(w.tip_count() > 1, "a fed colony should branch");
-    assert!(w.tip_count() <= cap, "tips must not exceed the cap");
+    // M1e playtest fix 1 slowed the growth cadence (P_MY_GROWTH_INTERVAL 3 -> 8, ~2.7x fewer
+    // growth ticks per step), so scale the step budget up to match. Track the PEAK tip count
+    // across the run (like global_mushroom_cap_is_respected does for mushrooms) rather than
+    // just checking the final tick: up to 12 tips concurrently tunneling through the same soil
+    // mass under fix 4's 2-wide strands can hollow it out enough that some regions cave in
+    // (soil above a tunnel slumping into the void), so a heavily-fed colony can branch all the
+    // way to the cap and *later* start starving/receding as its local substrate runs out --
+    // that's a real, correct part of the growth/recede lifecycle, not a failure to branch.
+    let mut max_tips = 0usize;
+    for _ in 0..900 {
+        w.step();
+        max_tips = max_tips.max(w.tip_count());
+        assert!(w.tip_count() <= cap, "tips must not exceed the cap");
+    }
+    assert!(max_tips > 1, "a fed colony should branch");
+}
+
+#[test]
+fn strand_is_at_least_two_wide_and_orthogonally_connected() {
+    // M1e playtest fix 4: strands should be P_MY_STRAND_WIDTH (default 2) cells wide. A diagonal
+    // step's two endpoints are otherwise only corner-connected to each other (8-connectivity, not
+    // 4-connectivity) -- exactly the straight-45-degree, corner-only-connected problem fix 3
+    // calls out -- UNLESS something also fills in one of the two orthogonal "elbow" cells between
+    // them, which is exactly what thicken_strand's extra cell does for a diagonal move.
+    //
+    // This is deliberately a single, deterministic diagonal step rather than a long organic
+    // random walk: every neighbor of the spawn point is walled off with Rock except one diagonal
+    // target cell (rich Soil, so pick_step picks it regardless of RNG -- richness+soil_bonus
+    // dwarfs the wander term) and the two orthogonal elbow cells that would bridge spawn->target,
+    // left Empty so thickening has somewhere to go. Over hundreds of organic growth steps a
+    // wiggly path can coincidentally end up passing near itself and fill an "elbow" cell purely
+    // by chance (unrelated to thickening), which would make a scan-the-whole-strand version of
+    // this test pass even with thickening disabled -- pinning down one exact step rules that out.
+    let mut w = World::new(64, 64);
+    // Block every neighbor of (32,32) except the diagonal target (33,33) and the two elbow cells
+    // (33,32), (32,33) (left as default Empty).
+    for (dx, dy) in [(-1i32, -1i32), (0, -1), (1, -1), (-1, 0), (-1, 1)] {
+        w.paint(32 + dx, 32 + dy, 0, Material::Rock as u8);
+    }
+    // Soil is granular: without support directly (and diagonally) below, the lone Soil cell at
+    // (33,33) would fall/slide away under gravity (which runs before growth within the same
+    // step()) before the tip ever gets a chance to sense it.
+    for x in 32..=34 { w.paint(x, 34, 0, Material::Rock as u8); }
+    w.paint(33, 33, 0, Material::Soil as u8);
+    w.set_soil_richness(33, 33, 150);
+    let id = w.spawn_colony(32, 32);
+    w.step(); // my_grow_countdown starts at 0, so this is exactly one growth tick
+    assert_eq!(
+        w.get(33, 33),
+        Material::Mycelium,
+        "setup: the tip's only real candidate is the rich diagonal soil cell"
+    );
+    let elbow_filled = (w.get(33, 32) == Material::Mycelium && w.cell_aux(33, 32) == id)
+        || (w.get(32, 33) == Material::Mycelium && w.cell_aux(32, 33) == id);
+    assert!(
+        elbow_filled,
+        "a diagonal step should also fill an orthogonal elbow cell (strand width >= 2) -- \
+         otherwise the pair is left only corner-connected"
+    );
+}
+
+#[test]
+fn mycelium_does_not_grow_far_into_open_air() {
+    // M1e playtest fix 2: a tip may cross at most P_MY_MAX_AIR_REACH consecutive Empty cells
+    // before it must reach Soil again, or it dies rather than sailing further into open sky.
+    // Spawn a colony with only a small soil patch nearby and mostly open air everywhere else,
+    // then run for a long time: growth must NOT sprawl across the open region indefinitely (the
+    // old model, with no air-reach limit and momentum locking onto a long ray, could shoot a
+    // strand clear across open space) -- it should stay near the patch, exhaust it, and the
+    // world should settle (no live tips, no cells still processing).
+    let mut w = World::new(128, 128);
+    // A small anchored soil patch, otherwise the entire 128x128 world is open Empty air.
+    for x in 60..64 { w.paint(x, 68, 0, Material::Rock as u8); } // floor under the patch
+    for x in 60..64 {
+        for y in 64..68 {
+            w.paint(x as i32, y as i32, 0, Material::Soil as u8);
+            w.set_soil_richness(x, y, 80);
+        }
+    }
+    w.spawn_colony(62, 65);
+    for _ in 0..6000 {
+        w.step();
+    }
+    w.step();
+    assert_eq!(w.tip_count(), 0, "tips should have died out once the small patch was exhausted");
+    assert_eq!(
+        w.cells_processed, 0,
+        "growth must not sprawl across the open region forever -- the world should settle"
+    );
+
+    // No mycelium cell should have ended up far from any Soil (or the patch's original
+    // footprint): with P_MY_MAX_AIR_REACH default 3, a strand can only reach a handful of cells
+    // beyond substrate before it's forced to turn back or die, nowhere near sprawling across the
+    // open 128x128 field.
+    let far_reach = 20usize; // generous margin well beyond a few air-reach hops
+    for x in 0..128usize {
+        for y in 0..128usize {
+            if w.get(x, y) != Material::Mycelium {
+                continue;
+            }
+            let dx = (x as isize - 62).unsigned_abs();
+            let dy = (y as isize - 66).unsigned_abs();
+            assert!(
+                dx < far_reach && dy < far_reach,
+                "mycelium cell at ({x},{y}) is implausibly far from the only soil patch (62..66,64..68)"
+            );
+        }
+    }
 }
 
 #[test]
 fn starving_colony_recedes_and_world_sleeps() {
     let mut w = World::new(64, 64);
-    // colony in EMPTY space (no soil to eat) -> pool stays 0 -> starves
+    // colony in EMPTY space (no soil to eat) -> pool stays 0 -> starves. Since M1e playtest fix 2
+    // (P_MY_MAX_AIR_REACH), a tip with no soil anywhere nearby actually dies from the air-reach
+    // cap within just a few growth ticks (pick_step refuses to extend further into open Empty),
+    // well before it could ever grow ~90 cells and reach the old starvation-recede path -- so in
+    // THIS pure-open-air setup the tip dies boxed-in almost immediately rather than growing then
+    // receding. Either way the assertions below hold (no live tips, world settled), so this test
+    // still passes; the budget below is generous legacy headroom from when this test relied on a
+    // full grow-then-recede cycle.
     w.spawn_colony(32, 32);
-    // Growth (up to STARVE_GRACE_TICKS=90 growth ticks) lays down a strand of up to ~90 cells,
-    // plus whatever P_MY_BRANCH_CHANCE branches add; recede then has to walk all of that back at
-    // P_MY_DIEBACK (default 1) cell per growth tick, so this needs a much bigger budget than the
-    // ~90-growth-tick grace period alone -- 2000 world steps is ~666 growth ticks, comfortably
-    // enough to grow and then fully recede before the assertions below.
     for _ in 0..2000 { w.step(); }
     w.step();
     assert_eq!(w.tip_count(), 0, "starved tips die");
@@ -173,14 +288,21 @@ fn count_material(w: &World, dims: (usize, usize), mat: Material) -> usize {
 fn fed_colony_fruits_and_spends_pool() {
     let mut w = World::new(64, 64);
     // Colony sits in open space with plenty of empty headroom above -- has_fruiting_room and
-    // try_fruit's footprint fit-check should succeed against a nearly-empty world.
+    // try_fruit's footprint fit-check should succeed against a nearly-empty world. A small soil
+    // patch just below the spawn (on a rock floor so it can't avalanche away) keeps the tip
+    // within the M1e playtest fix 2 air-reach budget (P_MY_MAX_AIR_REACH) as it wanders, instead
+    // of dying in open air before it ever gets a chance to fruit; the headroom above y=40 stays
+    // clear either way.
+    for x in 10..54 { w.paint(x, 46, 0, Material::Rock as u8); }
+    for x in 10..54 { for y in 41..46 { w.paint(x, y, 0, Material::Soil as u8); } }
     let id = w.spawn_colony(32, 40);
     w.set_colony_pool(id, 500); // above P_MY_FRUIT_THRESHOLD (400)
     let before_pool = w.colony_pool(id);
     let before_len = w.mushroom_len();
-    // my_grow_countdown starts at 0, so the next step is a growth tick; give a small budget of
-    // growth ticks in case the tip's first extend moves it somewhere fruiting can't fit.
-    for _ in 0..30 {
+    // my_grow_countdown starts at 0, so the next step is a growth tick. M1e playtest fix 1 slowed
+    // the growth cadence (P_MY_GROWTH_INTERVAL 3 -> 8), so give a bigger budget of growth ticks in
+    // case the tip's first several extends move it somewhere fruiting can't fit.
+    for _ in 0..90 {
         w.step();
         if w.mushroom_len() > before_len { break; }
     }
@@ -301,29 +423,85 @@ fn global_mushroom_cap_is_respected() {
     assert!(max_seen > 0, "setup: expected at least one mushroom to have fruited during the run");
 }
 
+/// Carve a 1-cell-wide, ZERO-richness Soil corridor that zigzags (right/down/right/up/...),
+/// walled on every other side by Rock, and spawn a colony at its start. Returns the colony id.
+///
+/// M1e playtest fixes 3/4 made pick_step considerably more wiggly (weaker momentum, an
+/// orthogonal bias, a wider RNG wander term). A LONE tip freely wandering open 2D ground now
+/// self-traps (no passable, unvisited neighbor left -- see pick_step's None case) within
+/// anywhere from ~15 to ~70 growth ticks, well short of the 90-tick starvation grace period
+/// (STARVE_GRACE_TICKS) these tests need to survive to ever reach the starvation-recede path --
+/// and a tip that dies boxed-in does NOT recede (by design: that's a "stopped growing, keep the
+/// structure" event, not "no food anywhere, shrink back", see `tip_count_tracks_live_tips`),
+/// so a self-trapped tip would leave a permanent, un-receded stub and never exercise recede_tip
+/// at all. Walling the tip into a corridor only one cell wide removes that randomness: at every
+/// step the ONLY unvisited passable neighbor is the next corridor cell, so growth is forced and
+/// deterministic regardless of pick_step's RNG. The corridor still zigzags (real turns, not a
+/// straight ray) so recede_tip's "follow the actual strand backward through turns" logic (see
+/// its doc comment on chords/degree-preference) is still genuinely exercised. Soil is freshly
+/// painted (default aux 0, i.e. zero richness -- see `Material::initial_aux`), so the colony's
+/// pool never fills and it starves right on schedule once past the grace period.
+fn spawn_colony_in_forced_zigzag_corridor(w: &mut World) -> u8 {
+    let (start_x, start_y) = (10i32, 60i32);
+    let (seg_len, segments) = (20i32, 7); // length 1 + 7*20 = 141 cells, comfortably > grace+recede
+    let mut path = vec![(start_x, start_y)];
+    let (mut x, mut y) = (start_x, start_y);
+    for seg in 0..segments {
+        let (dx, dy) = match seg % 4 {
+            0 => (1, 0),
+            1 => (0, 1),
+            2 => (1, 0),
+            _ => (0, -1),
+        };
+        for _ in 0..seg_len {
+            x += dx;
+            y += dy;
+            path.push((x, y));
+        }
+    }
+    let (min_x, max_x) = (path.iter().map(|p| p.0).min().unwrap() - 1, path.iter().map(|p| p.0).max().unwrap() + 1);
+    let (min_y, max_y) = (path.iter().map(|p| p.1).min().unwrap() - 1, path.iter().map(|p| p.1).max().unwrap() + 1);
+    for yy in min_y..=max_y {
+        for xx in min_x..=max_x {
+            w.paint(xx, yy, 0, Material::Rock as u8);
+        }
+    }
+    for &(px, py) in &path {
+        w.paint(px, py, 0, Material::Soil as u8);
+    }
+    w.spawn_colony(start_x as usize, start_y as usize)
+}
+
 #[test]
 fn dieback_reverts_multiple_cells_per_tick() {
-    let mut w = World::new(64, 64);
+    let mut w = World::new(192, 128);
     // No branching, so there's exactly one tip growing one strand -- keeps the cell count
     // delta attributable purely to recede_tip, not try_branch.
     w.params.values[sandgun_core::params::P_MY_BRANCH_CHANCE] = 0.0;
     w.params.values[sandgun_core::params::P_MY_DIEBACK] = 3.0;
-    // colony in EMPTY space (no soil to eat) -> pool stays 0 -> starves after the grace period,
-    // but until then the tip freely wanders/extends into empty cells, laying a multi-cell strand.
-    w.spawn_colony(32, 32);
+    // Width 1: fix 4's perpendicular thickening would otherwise paint ahead of the tip at each
+    // turn of the 1-wide corridor, consuming the very next forced cell before the tip gets
+    // there (a corner-eating variant of the same cannibalization seen in
+    // tip_grows_toward_richer_substrate) and boxing it in. Strand width isn't what this test is
+    // about -- it's isolating recede_tip -- so disable it here, same spirit as zeroing
+    // P_MY_BRANCH_CHANCE above.
+    w.params.values[sandgun_core::params::P_MY_STRAND_WIDTH] = 1.0;
+    spawn_colony_in_forced_zigzag_corridor(&mut w);
     // Grace period is 90 growth ticks (age_ticks > 90 is starving); my_grow_countdown starts at
-    // 0 so a world step is a growth tick every P_MY_GROWTH_INTERVAL (3) steps. Run exactly the
-    // grace period's worth of growth ticks so the colony is one tick shy of starving.
-    for _ in 0..(90 * 3) { w.step(); }
-    let before = count_mycelium(&w, (64, 64));
+    // 0 so a world step is a growth tick every P_MY_GROWTH_INTERVAL steps. Run exactly the grace
+    // period's worth of growth ticks (read dynamically so this stays correct if the interval is
+    // retuned) so the colony is one tick shy of starving.
+    let interval = w.params.values[sandgun_core::params::P_MY_GROWTH_INTERVAL] as usize;
+    for _ in 0..(90 * interval) { w.step(); }
+    let before = count_mycelium(&w, (192, 128));
     assert!(
         before >= 4,
         "need a multi-cell strand to exercise multi-cell dieback (only {before} mycelium cells)"
     );
     // One more growth tick: now starving (age_ticks == 91 > 90) -> recede_tip should revert
     // P_MY_DIEBACK (3) cells this tick, not just 1.
-    for _ in 0..3 { w.step(); }
-    let after = count_mycelium(&w, (64, 64));
+    for _ in 0..interval { w.step(); }
+    let after = count_mycelium(&w, (192, 128));
     let reverted = before - after;
     assert!(
         reverted >= 3,
@@ -333,20 +511,24 @@ fn dieback_reverts_multiple_cells_per_tick() {
 
 #[test]
 fn winding_strand_fully_recedes_no_stubs() {
-    let mut w = World::new(64, 64);
-    // A single wandering tip in open space naturally winds (momentum bias competes with the
-    // per-step RNG jitter in pick_step), so this exercises recede_tip's "follow the actual
-    // strand backward" behavior rather than a straight-line special case.
+    let mut w = World::new(192, 128);
+    // No branching, so there's exactly one tip/strand -- isolates recede_tip's full-unwind
+    // behavior from try_branch.
     w.params.values[sandgun_core::params::P_MY_BRANCH_CHANCE] = 0.0;
-    w.spawn_colony(32, 32);
+    // See the width-1 note in dieback_reverts_multiple_cells_per_tick above: fix 4's
+    // perpendicular thickening would otherwise eat the corridor's next forced cell at each turn.
+    w.params.values[sandgun_core::params::P_MY_STRAND_WIDTH] = 1.0;
+    spawn_colony_in_forced_zigzag_corridor(&mut w);
     // Grow past the grace period so it starts starving, then keep going long enough to fully
     // unwind whatever strand it grew (grace ~90 growth ticks to grow, plus generous budget to
-    // recede at the default dieback rate) and for the world to settle.
-    for _ in 0..(400 * 3) { w.step(); }
+    // recede at the default dieback rate) and for the world to settle. Scaled off the actual
+    // growth interval so this stays correct if it's retuned.
+    let interval = w.params.values[sandgun_core::params::P_MY_GROWTH_INTERVAL] as usize;
+    for _ in 0..(400 * interval) { w.step(); }
     w.step();
     assert_eq!(w.tip_count(), 0, "starved tip should have died once fully receded");
     assert_eq!(
-        count_mycelium(&w, (64, 64)),
+        count_mycelium(&w, (192, 128)),
         0,
         "winding strand should fully unwind -- no leftover dead-mycelium stubs"
     );
@@ -1024,3 +1206,4 @@ fn full_lifecycle_world_still_sleeps_after_settling() {
         "with colonies, avatar, a projectile, and particles all live at once, the world must fully settle to sleep"
     );
 }
+

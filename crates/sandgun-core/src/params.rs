@@ -43,7 +43,10 @@ pub const P_MY_WORLDGEN_COLONIES: usize = 34; // number of colony origins seeded
 pub const P_SOIL_RICHNESS_MIN: usize = 35;  // worldgen baseline soil richness (aux) lower bound
 pub const P_SOIL_RICHNESS_MAX: usize = 36;  // worldgen baseline soil richness (aux) upper bound
 pub const P_MUSH_LIFESPAN: usize = 37;      // growth ticks a completed mushroom lives before decaying
-pub const P_COUNT: usize = 38;
+// --- M1e playtest fixes: keep strands on substrate, wiggly, 2-wide ---
+pub const P_MY_MAX_AIR_REACH: usize = 38;   // max consecutive Empty cells a tip may cross before it must reach Soil again
+pub const P_MY_STRAND_WIDTH: usize = 39;    // cells wide a growing strand lays down (bounded 2-3)
+pub const P_COUNT: usize = 40;
 
 /// Hot-tunable sim parameters. Index constants are mirrored in web/src/params.js — keep in sync.
 pub struct Params {
@@ -80,7 +83,7 @@ impl Default for Params {
         v[P_MUSH_REVEAL] = 2.0;
         v[P_GUNFIRE_SPORE_CHANCE] = 0.5;
         v[P_ASH_CHANCE] = 0.25;
-        v[P_MY_GROWTH_INTERVAL] = 3.0;
+        v[P_MY_GROWTH_INTERVAL] = 8.0; // M1e playtest: 3 grew far too fast; slower cadence to read as organic growth
         v[P_MY_TIP_CAP] = 12.0;
         v[P_MY_EAT] = 1.0;
         v[P_MY_FRUIT_THRESHOLD] = 400.0;
@@ -91,6 +94,8 @@ impl Default for Params {
         v[P_SOIL_RICHNESS_MIN] = 40.0;
         v[P_SOIL_RICHNESS_MAX] = 120.0;
         v[P_MUSH_LIFESPAN] = 900.0;
+        v[P_MY_MAX_AIR_REACH] = 3.0;
+        v[P_MY_STRAND_WIDTH] = 2.0;
         Params { values: v }
     }
 }

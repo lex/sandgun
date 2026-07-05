@@ -46,6 +46,10 @@ pub struct Tip {
     pub last_dx: i8,
     pub last_dy: i8,
     pub alive: bool,
+    /// Consecutive Empty-cell steps since this tip last touched Soil (reset to 0 on stepping into
+    /// Soil, incremented on stepping into Empty). Caps how far a strand can fly through open air
+    /// before it must reach substrate again -- see P_MY_MAX_AIR_REACH in pick_step.
+    pub air_run: u8,
 }
 
 impl World {
@@ -67,7 +71,7 @@ impl World {
         self.cells[i].aux = id;
         self.cells[i].flags &= !crate::cell::FLAG_BURNING;
         self.wake(x, y);
-        self.tips.push(Tip { x, y, colony: id, last_dx: 0, last_dy: -1, alive: true });
+        self.tips.push(Tip { x, y, colony: id, last_dx: 0, last_dy: -1, alive: true, air_run: 0 });
         id
     }
     pub fn colony_count(&self) -> usize { self.colonies.iter().filter(|c| c.alive).count() }
@@ -139,16 +143,17 @@ impl World {
             let rich_hit = self.extend_tip(ti, eat);
             if !self.tips[ti].alive { continue; } // boxed in; pick_step found nowhere to go
             let (x, y) = (self.tips[ti].x, self.tips[ti].y);
+            let air_run = self.tips[ti].air_run;
             // Branch mechanism 1: stepping into rich soil spawns 1-2 new tips toward the food.
             if let Some(r) = rich_hit {
                 if r > BRANCH_RICH_FLOOR {
-                    self.try_branch(colony_id, x, y, cap);
-                    self.try_branch(colony_id, x, y, cap);
+                    self.try_branch(colony_id, x, y, cap, air_run);
+                    self.try_branch(colony_id, x, y, cap, air_run);
                 }
             }
             // Branch mechanism 2: rare periodic branching, independent of richness.
             if self.chance(branch_chance) {
-                self.try_branch(colony_id, x, y, cap);
+                self.try_branch(colony_id, x, y, cap, air_run);
             }
         }
         self.tips.retain(|t| t.alive); // drop dead tips so the loop stays cheap
@@ -245,20 +250,74 @@ impl World {
         self.cells[i].aux = t.colony; // colony id; overwrites soil richness (now spent)
         self.cells[i].flags &= !crate::cell::FLAG_BURNING;
         self.wake(ux, uy);
+        let (dx, dy) = (nx - t.x as isize, ny - t.y as isize);
         self.tips[ti].x = ux;
         self.tips[ti].y = uy;
-        self.tips[ti].last_dx = (nx - t.x as isize) as i8;
-        self.tips[ti].last_dy = (ny - t.y as isize) as i8;
+        self.tips[ti].last_dx = dx as i8;
+        self.tips[ti].last_dy = dy as i8;
+        // FIX 2: track how far this tip has flown through open air since it last touched soil;
+        // pick_step refuses to extend further into Empty once this exceeds P_MY_MAX_AIR_REACH.
+        self.tips[ti].air_run = if dst == Material::Soil { 0 } else { t.air_run.saturating_add(1) };
+        // FIX 4: thicken the strand -- lay P_MY_STRAND_WIDTH-1 extra cells perpendicular to the
+        // movement direction, so strands are orthogonally (not just diagonally/corner) connected
+        // and read as solid rather than hairline-thin.
+        self.thicken_strand(t.colony, nx, ny, dx, dy, eat);
         eaten
+    }
+
+    /// Lay extra Mycelium cells alongside a tip's just-taken step (dx, dy) so the strand is
+    /// orthogonally (4-)connected, not just corner-touching. Only ever overwrites Soil or Empty
+    /// (never carves through Rock/other terrain); a Soil cell eaten this way still feeds the
+    /// colony's pool. Bounded by P_MY_STRAND_WIDTH (meant to stay small, 2-3).
+    fn thicken_strand(&mut self, colony_id: u8, nx: isize, ny: isize, dx: isize, dy: isize, eat: f32) {
+        let width = (self.params.values[crate::params::P_MY_STRAND_WIDTH].max(1.0) as i32).min(3);
+        if width <= 1 { return; }
+        // Candidate extra cells, nearest first. dx/dy are each in {-1,0,1} and never both 0 (a
+        // real step was taken).
+        let extra: [(isize, isize); 2] = if dx != 0 && dy != 0 {
+            // Diagonal move: a diagonal step's two endpoints are only corner-connected to each
+            // other (8-connectivity) -- exactly the "corner-only" straight-45-degree-line problem
+            // fix 3 calls out. The two cells that ORTHOGONALLY bridge the source (nx-dx, ny-dy)
+            // and destination (nx, ny) into true 4-connectivity are (nx, ny-dy) and (nx-dx, ny)
+            // -- each shares an edge with both endpoints. (A naive 90-degree rotation of (dx, dy)
+            // would instead give a cell only diagonally touching the destination, which would NOT
+            // fix the corner-connectivity problem this thickening exists for.)
+            [(nx, ny - dy), (nx - dx, ny)]
+        } else {
+            // Orthogonal move: thicken sideways, one cell on each side of the direction of
+            // travel (a 90-degree rotation of (dx, dy) is itself orthogonal here, so it directly
+            // neighbors the destination).
+            let (perp_dx, perp_dy) = (-dy, dx);
+            [(nx + perp_dx, ny + perp_dy), (nx - perp_dx, ny - perp_dy)]
+        };
+        for &(wx, wy) in extra.iter().take((width - 1) as usize) {
+            if !self.in_bounds(wx, wy) { continue; }
+            let wm = self.material_at(wx, wy);
+            if wm != Material::Empty && wm != Material::Soil { continue; } // never overwrite terrain
+            let (wux, wuy) = (wx as usize, wy as usize);
+            if wm == Material::Soil {
+                let r = self.cell_aux(wux, wuy);
+                if let Some(c) = self.colonies.iter_mut().find(|c| c.id == colony_id) {
+                    c.nutrient_pool = c.nutrient_pool.saturating_add((r as f32 * eat) as u32);
+                }
+            }
+            let wi = self.idx(wux, wuy);
+            self.cells[wi].material = Material::Mycelium as u8;
+            self.cells[wi].aux = colony_id;
+            self.cells[wi].flags &= !crate::cell::FLAG_BURNING;
+            self.wake(wux, wuy);
+        }
     }
 
     /// Spawn one new tip for `colony_id` at (x,y) if the colony's live tip count is under the
     /// hard cap. The new tip starts with no momentum (last_dx/last_dy = 0); pick_step's own
     /// richness-sampling and shuffle naturally diverge it from its sibling on the next tick
     /// (its parent's cell is now occupied Mycelium, so it can't just retrace the same step).
-    fn try_branch(&mut self, colony_id: u8, x: usize, y: usize, cap: u16) {
+    /// Inherits `air_run` from the parent tip it branched off of -- a branch spawned deep in open
+    /// air shouldn't reset its air budget for free.
+    fn try_branch(&mut self, colony_id: u8, x: usize, y: usize, cap: u16, air_run: u8) {
         if self.colony_tip_count(colony_id) >= cap { return; }
-        self.tips.push(Tip { x, y, colony: colony_id, last_dx: 0, last_dy: 0, alive: true });
+        self.tips.push(Tip { x, y, colony: colony_id, last_dx: 0, last_dy: 0, alive: true, air_run });
         if let Some(c) = self.colonies.iter_mut().find(|c| c.id == colony_id) {
             c.tip_count += 1;
         }
@@ -345,8 +404,21 @@ impl World {
 
     /// Choose the next cell for a tip: the passable (Empty/Soil) neighbor with the highest
     /// substrate richness, momentum-biased and RNG-tie-broken. None if boxed in.
+    ///
+    /// M1e playtest fixes:
+    /// - Soil gets a large flat bonus over Empty so a tip essentially always prefers substrate
+    ///   when it's available, instead of drifting into open air (FIX 2).
+    /// - A tip that has already flown P_MY_MAX_AIR_REACH consecutive Empty cells without
+    ///   touching Soil may not step into Empty again -- only Soil candidates remain for it. If
+    ///   none exist, this returns None and the tip dies rather than sailing further into air
+    ///   (FIX 2).
+    /// - Momentum is a much smaller bonus than before, and the 4 orthogonal neighbors get a
+    ///   small bonus over the 4 diagonals, so strands wiggle and curve instead of locking onto
+    ///   straight 45-degree, corner-only-connected rays. The random wander term's range is also
+    ///   widened (FIX 3).
     fn pick_step(&mut self, t: Tip) -> Option<(isize, isize)> {
         let (tx, ty) = (t.x as isize, t.y as isize);
+        let max_air_reach = self.params.values[crate::params::P_MY_MAX_AIR_REACH].max(0.0) as u8;
         let mut best: Option<(isize, isize)> = None;
         let mut best_score = i32::MIN;
         // evaluate the 8 neighbors in a shuffled order for unbiased ties
@@ -359,10 +431,15 @@ impl World {
             if !self.in_bounds(nx, ny) { continue; }
             let m = self.material_at(nx, ny);
             if m != Material::Empty && m != Material::Soil { continue; } // only grow into empty/soil
+            if m == Material::Empty && t.air_run >= max_air_reach { continue; } // out of air budget
             let richness = if m == Material::Soil { self.cell_aux(nx as usize, ny as usize) as i32 } else { 0 };
-            // momentum bias: prefer continuing roughly the same direction (thin strands, not blobs)
-            let momentum = if dx == t.last_dx as isize && dy == t.last_dy as isize { 6 } else { 0 };
-            let score = richness + momentum + (self.next_rand() % 3) as i32;
+            let soil_bonus = if m == Material::Soil { 40 } else { 0 }; // strongly prefer substrate
+            // momentum bias: mild preference for continuing roughly the same direction
+            let momentum = if dx == t.last_dx as isize && dy == t.last_dy as isize { 2 } else { 0 };
+            // orthogonal bias: de-bias pure 45-degree diagonals (corner-only connected) in favor
+            // of the 4 orthogonal neighbors, so strands stay wiggly and 4-connected
+            let orthogonal = if dx == 0 || dy == 0 { 2 } else { 0 };
+            let score = richness + soil_bonus + momentum + orthogonal + (self.next_rand() % 5) as i32;
             if score > best_score { best_score = score; best = Some((nx, ny)); }
         }
         best

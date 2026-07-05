@@ -215,6 +215,59 @@ pub fn generate(world: &mut World, seed: u32) {
         }
     }
 
+    // 4b. declump: playtest feedback was that surviving Rock had salt-and-pepper single specks
+    // scattered through the soil, which reads as noise rather than structure. Repeatedly convert
+    // any Rock cell with fewer than 2 Rock neighbors (8-neighborhood) to Soil -- this erodes away
+    // truly lonely specks (0 neighbors) and near-lonely noise (1 neighbor) while leaving cohesive
+    // rock clumps/veins (which have several neighbors along their body) intact. A stricter cutoff
+    // (e.g. <4) cascades: each pass thins every cluster's edge, which drops previously-safe edge
+    // cells below the threshold too, so repeated passes eat through structural rock almost
+    // entirely rather than just the noise. Only ever touches cells that are still Rock and only
+    // ever turns them into Soil, so caves (already Empty) are never affected. Runs AFTER the
+    // material pockets above (step 4): those sand dune blobs paint unconditionally (no
+    // Material::Empty guard, unlike the water/oil/spore pockets), so a dune straddling the
+    // surface can carve into existing Rock and leave a fresh isolated cell behind -- declumping
+    // before that point would miss it. The richness bake below (step 6) runs after this and
+    // scans for whatever is Soil at that point, so newly-converted cells get richness too.
+    // Repeats until stable (a fixed small count can leave a straggler: eroding one cell can drop
+    // a neighbor below the threshold too, and that chain occasionally needs a few more passes
+    // than "2-3" to fully settle) -- each pass strictly shrinks the Rock count, so this always
+    // terminates; the cap is just a generous safety bound, never expected to bind in practice.
+    for _ in 0..20 {
+        let mut to_soil: Vec<(usize, usize)> = Vec::new();
+        for x in 0..w {
+            for yy in 0..h {
+                if world.get(x, yy) != Material::Rock {
+                    continue;
+                }
+                let mut n = 0;
+                for dy in -1i32..=1 {
+                    for dx in -1i32..=1 {
+                        if (dx, dy) == (0, 0) {
+                            continue;
+                        }
+                        let (nx, ny) = (x as i32 + dx, yy as i32 + dy);
+                        if nx < 0 || ny < 0 || nx as usize >= w || ny as usize >= h {
+                            continue;
+                        }
+                        if world.get(nx as usize, ny as usize) == Material::Rock {
+                            n += 1;
+                        }
+                    }
+                }
+                if n < 2 {
+                    to_soil.push((x, yy));
+                }
+            }
+        }
+        if to_soil.is_empty() {
+            break;
+        }
+        for (x, yy) in to_soil {
+            set(world, x, yy, Material::Soil, &mut rng);
+        }
+    }
+
     // 5. everything settles alive
     world.wake_all();
 

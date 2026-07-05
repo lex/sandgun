@@ -121,3 +121,51 @@ fn generated_world_fully_settles() {
     w.step();
     assert_eq!(w.cells_processed, 0, "an untouched generated world must fully settle");
 }
+
+/// Count of Rock cells with zero Rock neighbors in the 8-neighborhood (a fully isolated
+/// salt-and-pepper speck sitting alone in soil).
+fn lonely_rock_speck_count(w: &World) -> usize {
+    let mut n = 0;
+    for y in 0..w.height {
+        for x in 0..w.width {
+            if w.get(x, y) != Material::Rock {
+                continue;
+            }
+            let mut neighbors = 0;
+            for dy in -1i32..=1 {
+                for dx in -1i32..=1 {
+                    if (dx, dy) == (0, 0) {
+                        continue;
+                    }
+                    let (nx, ny) = (x as i32 + dx, y as i32 + dy);
+                    if nx < 0 || ny < 0 || nx as usize >= w.width || ny as usize >= w.height {
+                        continue;
+                    }
+                    if w.get(nx as usize, ny as usize) == Material::Rock {
+                        neighbors += 1;
+                    }
+                }
+            }
+            if neighbors == 0 {
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
+#[test]
+fn worldgen_has_no_lonely_rock_specks() {
+    // M1e playtest fix 5: Lex's feedback was that worldgen's surviving Rock had salt-and-pepper
+    // single specks scattered through the soil, which read as noise rather than structure. A
+    // declump pass (worldgen::generate step 4b, after all terrain/material pockets are placed)
+    // erodes away any Rock cell with fewer than 2 Rock neighbors, repeated until stable, so only
+    // cohesive clumps/veins should remain -- no cell sitting completely alone. Checked across
+    // several seeds since this is about a general property of the generator, not one lucky seed.
+    for seed in [1u32, 7, 42, 99] {
+        let mut w = World::new(256, 192);
+        worldgen::generate(&mut w, seed);
+        let lonely = lonely_rock_speck_count(&w);
+        assert_eq!(lonely, 0, "seed {seed}: found {lonely} fully isolated (0-neighbor) rock specks");
+    }
+}

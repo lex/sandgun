@@ -26,7 +26,7 @@
   "mush_reveal": 2,
   "gunfire_spore_chance": 0.5,
   "ash_chance": 0.25,
-  "my_growth_interval": 3,
+  "my_growth_interval": 8,
   "my_tip_cap": 12,
   "my_eat": 1.0,
   "my_fruit_threshold": 400,
@@ -36,5 +36,7 @@
   "my_worldgen_colonies": 6,
   "soil_richness_min": 40,
   "soil_richness_max": 120,
-  "mush_lifespan": 900
+  "mush_lifespan": 900,
+  "my_max_air_reach": 3,
+  "my_strand_width": 2
 }
