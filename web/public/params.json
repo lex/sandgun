@@ -45,5 +45,6 @@
   "my_branch_chance": 0.04,
   "my_worldgen_colonies": 6,
   "soil_richness_min": 40,
-  "soil_richness_max": 120
+  "soil_richness_max": 120,
+  "mush_lifespan": 900
 }

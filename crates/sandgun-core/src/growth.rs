@@ -25,6 +25,19 @@ pub struct GrowingMushroom {
     pub sway_seed: u32,
 }
 
+/// A fully-grown mushroom counting down to decay (M1e task 4 v1 decay). Stores the same shape
+/// fields as `GrowingMushroom` so its footprint can be recomputed via `mushroom_footprint` once
+/// it's time to crumble -- no need to remember every cell up front.
+#[derive(Clone, Copy)]
+pub struct DecayingMushroom {
+    pub x: usize,
+    pub base_y: usize,
+    pub height: u8,
+    pub cap_r: u8,
+    pub sway_seed: u32,
+    pub ticks_left: u32,
+}
+
 impl World {
     /// Scan once (at load / after worldgen) and enqueue mycelium cells that border
     /// colonizable space. O(width*height) but runs only on demand, not per frame.
@@ -176,7 +189,8 @@ impl World {
     }
 
     /// Reveal more of each growing mushroom this tick; retire finished ones.
-    /// Completed caps are recorded in `self.caps` so they can later puff spores (Task 5).
+    /// Completed caps are recorded in `self.caps` so they can later puff spores, and in
+    /// `self.decaying_mushrooms` so they eventually crumble away (M1e task 4 v1 decay).
     pub fn grow_mushrooms(&mut self) {
         let reveal = self.params.values[P_MUSH_REVEAL] as u16;
         let mut i = 0;
@@ -189,10 +203,55 @@ impl World {
                     let interval = (self.params.values[P_PUFF_INTERVAL] as u32).max(1);
                     self.caps.push((m.x, cap_top_y as usize, interval, 3));
                 }
+                let lifespan = (self.params.values[P_MUSH_LIFESPAN] as u32).max(1);
+                self.decaying_mushrooms.push(DecayingMushroom {
+                    x: m.x,
+                    base_y: m.base_y,
+                    height: m.height,
+                    cap_r: m.cap_r,
+                    sway_seed: m.sway_seed,
+                    ticks_left: lifespan,
+                });
                 self.mushrooms.swap_remove(i);
             } else {
                 i += 1;
             }
+        }
+    }
+
+    /// Age completed mushrooms toward decay; once a mushroom's lifespan runs out its flesh
+    /// crumbles cell-by-cell to Ash (P_ASH_CHANCE) or Empty, same product mix as burnt-out
+    /// mycelium/flesh. Bounded list that drains to empty once nothing is decaying, so it stays
+    /// chunk-sleep safe (no per-frame scan; only ever as big as the completed-mushroom count).
+    pub fn decay_mushrooms(&mut self) {
+        let mut i = 0;
+        while i < self.decaying_mushrooms.len() {
+            if self.decaying_mushrooms[i].ticks_left > 0 {
+                self.decaying_mushrooms[i].ticks_left -= 1;
+                i += 1;
+                continue;
+            }
+            let m = self.decaying_mushrooms[i];
+            let footprint = mushroom_footprint(m.x as i32, m.base_y as i32, m.height, m.cap_r, m.sway_seed);
+            for (cx, cy) in footprint {
+                if !self.in_bounds(cx as isize, cy as isize) {
+                    continue;
+                }
+                if self.material_at(cx as isize, cy as isize) != Material::MushroomFlesh {
+                    continue; // already carved away, burned, etc.
+                }
+                let (ux, uy) = (cx as usize, cy as usize);
+                let product = if self.chance(self.params.values[P_ASH_CHANCE]) {
+                    Material::Ash
+                } else {
+                    Material::Empty
+                };
+                let shade = (self.next_rand() & 3) as u8;
+                let idx = self.idx(ux, uy);
+                self.cells[idx] = crate::cell::Cell::new(product, shade);
+                self.wake(ux, uy);
+            }
+            self.decaying_mushrooms.swap_remove(i);
         }
     }
 
@@ -294,7 +353,7 @@ impl World {
     /// directly above must be Empty, and so must a few more cells of vertical clearance above
     /// that. Without this, mycelium buried inside soil/sand could fruit and immediately try to
     /// grow its stem through solid ground.
-    fn has_fruiting_room(&self, x: usize, y: usize) -> bool {
+    pub(crate) fn has_fruiting_room(&self, x: usize, y: usize) -> bool {
         let xi = x as isize;
         for dy in 1..=4i32 {
             if self.material_at(xi, y as isize - dy as isize) != Material::Empty {

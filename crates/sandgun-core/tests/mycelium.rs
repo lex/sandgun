@@ -156,6 +156,79 @@ fn count_mycelium(w: &World, dims: (usize, usize)) -> usize {
     n
 }
 
+fn count_material(w: &World, dims: (usize, usize), mat: Material) -> usize {
+    let (width, height) = dims;
+    let mut n = 0;
+    for x in 0..width {
+        for y in 0..height {
+            if w.get(x, y) == mat { n += 1; }
+        }
+    }
+    n
+}
+
+#[test]
+fn fed_colony_fruits_and_spends_pool() {
+    let mut w = World::new(64, 64);
+    // Colony sits in open space with plenty of empty headroom above -- has_fruiting_room and
+    // try_fruit's footprint fit-check should succeed against a nearly-empty world.
+    let id = w.spawn_colony(32, 40);
+    w.set_colony_pool(id, 500); // above P_MY_FRUIT_THRESHOLD (400)
+    let before_pool = w.colony_pool(id);
+    let before_len = w.mushroom_len();
+    // my_grow_countdown starts at 0, so the next step is a growth tick; give a small budget of
+    // growth ticks in case the tip's first extend moves it somewhere fruiting can't fit.
+    for _ in 0..30 {
+        w.step();
+        if w.mushroom_len() > before_len { break; }
+    }
+    assert!(w.mushroom_len() > before_len, "a fed colony should fruit a mushroom");
+    assert!(
+        w.colony_pool(id) < before_pool,
+        "fruiting should spend the pool (before={before_pool}, after={})",
+        w.colony_pool(id)
+    );
+}
+
+#[test]
+fn hungry_colony_does_not_fruit() {
+    let mut w = World::new(64, 64);
+    let id = w.spawn_colony(32, 40);
+    w.set_colony_pool(id, 100); // below P_MY_FRUIT_THRESHOLD (400)
+    let before_len = w.mushroom_len();
+    for _ in 0..30 {
+        w.step();
+    }
+    assert_eq!(w.mushroom_len(), before_len, "a pool below threshold should never fruit");
+}
+
+#[test]
+fn mushroom_decays_after_lifespan() {
+    let mut w = World::new(64, 64);
+    // Small lifespan so the test doesn't need thousands of steps.
+    w.params.values[sandgun_core::params::P_MUSH_LIFESPAN] = 5.0;
+    // Grow a mushroom directly (no colony needed) at a spot with plenty of open headroom.
+    assert!(w.try_fruit(32, 40), "mushroom should fit in open space");
+    // grow_mushrooms is driven from grow_mycelium on the P_MY_GROWTH_INTERVAL cadence; step
+    // until the mushroom finishes revealing and moves off the growing list.
+    for _ in 0..500 {
+        w.step();
+        if w.mushroom_len() == 0 { break; }
+    }
+    assert_eq!(w.mushroom_len(), 0, "mushroom should finish revealing");
+    let flesh_before = count_material(&w, (64, 64), Material::MushroomFlesh);
+    assert!(flesh_before > 0, "a completed mushroom should have flesh cells");
+    // Run well past the (small) lifespan so it crumbles, plus enough steps for the world to
+    // settle back to sleep afterward.
+    for _ in 0..500 {
+        w.step();
+    }
+    w.step();
+    let flesh_after = count_material(&w, (64, 64), Material::MushroomFlesh);
+    assert_eq!(flesh_after, 0, "mushroom flesh should crumble away after its lifespan expires");
+    assert_eq!(w.cells_processed, 0, "world should settle again once decay finishes");
+}
+
 #[test]
 fn dieback_reverts_multiple_cells_per_tick() {
     let mut w = World::new(64, 64);

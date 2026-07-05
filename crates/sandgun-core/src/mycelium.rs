@@ -62,6 +62,13 @@ impl World {
     pub fn colony_pool(&self, id: u8) -> u32 {
         self.colonies.iter().find(|c| c.id == id).map(|c| c.nutrient_pool).unwrap_or(0)
     }
+    /// Test hook: directly set a colony's nutrient pool, for deterministic fruiting-trigger
+    /// tests that don't want to wait out real eating. A no-op if the id doesn't exist.
+    pub fn set_colony_pool(&mut self, id: u8, pool: u32) {
+        if let Some(c) = self.colonies.iter_mut().find(|c| c.id == id) {
+            c.nutrient_pool = pool;
+        }
+    }
     /// Live tip count recorded on a colony (test hook; kept in sync by grow_mycelium as tips die).
     pub fn colony_tip_count(&self, id: u8) -> u16 {
         self.colonies.iter().find(|c| c.id == id).map(|c| c.tip_count).unwrap_or(0)
@@ -74,9 +81,15 @@ impl World {
             .map(|c| c.nutrient_pool == 0 && c.age_ticks > STARVE_GRACE_TICKS)
             .unwrap_or(false)
     }
-    /// New growth entry point. Chunk-sleep safe: no-op when no live tips.
+    /// New growth entry point. Chunk-sleep safe: no-op when there are no live tips AND nothing
+    /// is mid-reveal or mid-decay (a colony can fully die -- no tips, empty pool -- while a
+    /// mushroom it already fruited is still growing or waiting to crumble; that must keep
+    /// draining even with zero live tips).
     pub fn grow_mycelium(&mut self) {
-        if self.tips.iter().all(|t| !t.alive) { return; }
+        let has_live_tips = self.tips.iter().any(|t| t.alive);
+        if !has_live_tips && self.mushrooms.is_empty() && self.decaying_mushrooms.is_empty() {
+            return;
+        }
         let eat = self.params.values[crate::params::P_MY_EAT];
         let cap = self.params.values[crate::params::P_MY_TIP_CAP].max(1.0) as u16;
         let branch_chance = self.params.values[crate::params::P_MY_BRANCH_CHANCE];
@@ -126,6 +139,47 @@ impl World {
         for c in self.colonies.iter_mut() {
             if c.tip_count == 0 && c.nutrient_pool == 0 {
                 c.alive = false;
+            }
+        }
+        // Fruiting: a colony fed above threshold spends a chunk of its pool to sprout a
+        // mushroom at one of its own well-fed tips. This REPLACES the old aux-maturity random
+        // fruiting trigger -- fruiting now only ever happens through the nutrient economy.
+        self.fruit_fed_colonies();
+        // Reveal any mushrooms fruited (this tick or earlier) and age completed ones toward
+        // decay. Driven from here (not the old dormant grow()) so fruiting is self-sufficient:
+        // both calls are no-ops once their lists drain empty, so this stays chunk-sleep safe.
+        self.grow_mushrooms();
+        self.decay_mushrooms();
+    }
+
+    /// For each alive colony whose nutrient pool has crossed P_MY_FRUIT_THRESHOLD, try to
+    /// sprout a mushroom at one of its live tips that has fruiting headroom. Spends
+    /// P_MY_FRUIT_COST from the pool only on an actual spawn (a footprint that doesn't fit costs
+    /// nothing -- the colony just tries again on a later growth tick once it or the world has
+    /// moved). At most one fruiting per colony per tick, bounded by live colony/tip counts.
+    fn fruit_fed_colonies(&mut self) {
+        let threshold = self.params.values[crate::params::P_MY_FRUIT_THRESHOLD].max(0.0) as u32;
+        let cost = self.params.values[crate::params::P_MY_FRUIT_COST].max(0.0) as u32;
+        let fed: Vec<u8> = self
+            .colonies
+            .iter()
+            .filter(|c| c.alive && c.nutrient_pool >= threshold)
+            .map(|c| c.id)
+            .collect();
+        for colony_id in fed {
+            let candidates: Vec<(usize, usize)> = self
+                .tips
+                .iter()
+                .filter(|t| t.alive && t.colony == colony_id)
+                .map(|t| (t.x, t.y))
+                .collect();
+            for (x, y) in candidates {
+                if self.has_fruiting_room(x, y) && self.try_fruit(x, y) {
+                    if let Some(c) = self.colonies.iter_mut().find(|c| c.id == colony_id) {
+                        c.nutrient_pool = c.nutrient_pool.saturating_sub(cost);
+                    }
+                    break; // one fruiting per colony per tick keeps this paced, not constant
+                }
             }
         }
     }

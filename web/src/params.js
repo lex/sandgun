@@ -13,7 +13,7 @@ const INDEX = {
   gunfire_spore_chance: 35, ash_chance: 36,
   my_growth_interval: 37, my_tip_cap: 38, my_eat: 39, my_fruit_threshold: 40,
   my_fruit_cost: 41, my_dieback: 42, my_branch_chance: 43, my_worldgen_colonies: 44,
-  soil_richness_min: 45, soil_richness_max: 46,
+  soil_richness_min: 45, soil_richness_max: 46, mush_lifespan: 47,
 };
 
 export async function loadParams(world) {

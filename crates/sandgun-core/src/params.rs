@@ -49,7 +49,8 @@ pub const P_MY_BRANCH_CHANCE: usize = 43;   // 0..1 periodic branch chance per t
 pub const P_MY_WORLDGEN_COLONIES: usize = 44; // number of colony origins seeded at worldgen
 pub const P_SOIL_RICHNESS_MIN: usize = 45;  // worldgen baseline soil richness (aux) lower bound
 pub const P_SOIL_RICHNESS_MAX: usize = 46;  // worldgen baseline soil richness (aux) upper bound
-pub const P_COUNT: usize = 47;
+pub const P_MUSH_LIFESPAN: usize = 47;      // growth ticks a completed mushroom lives before decaying
+pub const P_COUNT: usize = 48;
 
 /// Hot-tunable sim parameters. Index constants are mirrored in web/src/params.js — keep in sync.
 pub struct Params {
@@ -106,6 +107,7 @@ impl Default for Params {
         v[P_MY_WORLDGEN_COLONIES] = 6.0;
         v[P_SOIL_RICHNESS_MIN] = 40.0;
         v[P_SOIL_RICHNESS_MAX] = 120.0;
+        v[P_MUSH_LIFESPAN] = 900.0;
         Params { values: v }
     }
 }

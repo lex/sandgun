@@ -1,6 +1,6 @@
 use crate::avatar::Avatar;
 use crate::cell::{Cell, Material, FLAG_BURNING};
-use crate::growth::{FrontierCell, GrowingMushroom};
+use crate::growth::{DecayingMushroom, FrontierCell, GrowingMushroom};
 use crate::mycelium::{Colony, Tip};
 use crate::params::{
     Params, P_ACID_BLOB_RADIUS, P_ACID_ETCH, P_ACID_ETCH_ROCK, P_ASH_CHANCE, P_FIRE_FLICKER,
@@ -43,6 +43,9 @@ pub struct World {
     pub(crate) avatar: Option<Avatar>,
     pub(crate) frontier: Vec<FrontierCell>,
     pub(crate) mushrooms: Vec<GrowingMushroom>,
+    /// Completed mushrooms counting down to decay (M1e task 4 v1 decay); bounded by how many
+    /// mushrooms have ever finished growing and not yet crumbled.
+    pub(crate) decaying_mushrooms: Vec<DecayingMushroom>,
     pub(crate) grow_countdown: u32,
     /// Cadence gate for grow_mycelium(), mirroring grow_countdown for old growth (P_MY_GROWTH_INTERVAL).
     pub(crate) my_grow_countdown: u32,
@@ -80,6 +83,7 @@ impl World {
             avatar: None,
             frontier: Vec::new(),
             mushrooms: Vec::new(),
+            decaying_mushrooms: Vec::new(),
             grow_countdown: 0,
             my_grow_countdown: 0,
             caps: Vec::new(),
@@ -121,6 +125,7 @@ impl World {
         self.stamp.fill(0);
         self.frontier.clear();
         self.mushrooms.clear();
+        self.decaying_mushrooms.clear();
         self.caps.clear();
         self.grow_countdown = 0;
         self.my_grow_countdown = 0;
