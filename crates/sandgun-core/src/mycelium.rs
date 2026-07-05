@@ -10,8 +10,9 @@ const BRANCH_RICH_FLOOR: u8 = 30;
 /// distinguish "hasn't found food yet" from "never will". A colony gets this many growth ticks
 /// to find its first food (like a spore's stored reserve) before pool == 0 is treated as real
 /// starvation. Comfortably above the ~76-tick walk `tip_grows_toward_richer_substrate` needs to
-/// reach food, comfortably below the ~130-tick budget `starving_colony_recedes_and_world_sleeps`
-/// gives a colony with no food anywhere to fully recede and die.
+/// reach food. `starving_colony_recedes_and_world_sleeps` budgets far more growth ticks than
+/// this on top of the grace period, since receding a strand this long back to nothing costs one
+/// growth tick per P_MY_DIEBACK cells (see recede_tip).
 const STARVE_GRACE_TICKS: u32 = 90;
 
 #[derive(Clone, Copy)]
@@ -169,39 +170,83 @@ impl World {
         }
     }
 
-    /// Starvation dieback: revert the tip's own cell to Empty (the strand recedes from its
-    /// end), then step the tip backward along the direction it last grew from, `dieback` cells
-    /// this tick. If there's nowhere left to recede into (out of bounds, or the cell behind
-    /// isn't this colony's mycelium -- reached the root, a branch point, or the strand already
-    /// receded past here), the tip dies.
+    /// Starvation dieback: revert up to `dieback` cells to Empty this tick, one at a time,
+    /// following the strand backward through adjacent same-colony mycelium (not a remembered
+    /// direction vector -- that can't track a strand that turns). Each iteration reverts the
+    /// tip's current cell, then hops to an adjacent Mycelium cell belonging to the same colony.
+    /// If no such neighbor exists (reached the root, a branch point already claimed by another
+    /// tip's recede, or the strand is fully gone), the tip has nothing left to recede into and
+    /// dies.
     fn recede_tip(&mut self, ti: usize, dieback: usize) {
-        let t = self.tips[ti];
-        let i = self.idx(t.x, t.y);
-        if Material::from_u8(self.cells[i].material) == Material::Mycelium {
-            self.cells[i].material = Material::Empty as u8;
-            self.cells[i].aux = 0;
-            self.cells[i].flags = 0;
-            self.wake(t.x, t.y);
-        }
-        let (mut cx, mut cy) = (t.x as isize, t.y as isize);
-        let mut stepped = false;
+        let colony_id = self.tips[ti].colony;
         for _ in 0..dieback.max(1) {
-            let (bx, by) = (cx - t.last_dx as isize, cy - t.last_dy as isize);
-            if !self.in_bounds(bx, by) { break; }
-            let (bux, buy) = (bx as usize, by as usize);
-            if self.get(bux, buy) != Material::Mycelium || self.cell_aux(bux, buy) != t.colony {
-                break; // nothing left of this strand to recede into
+            let (x, y) = (self.tips[ti].x, self.tips[ti].y);
+            let i = self.idx(x, y);
+            if Material::from_u8(self.cells[i].material) == Material::Mycelium {
+                self.cells[i].material = Material::Empty as u8;
+                self.cells[i].aux = 0;
+                self.cells[i].flags = 0;
+                self.wake(x, y);
             }
-            cx = bx;
-            cy = by;
-            stepped = true;
+            match self.adjacent_same_colony_mycelium(x, y, colony_id) {
+                Some((nx, ny)) => {
+                    self.tips[ti].x = nx;
+                    self.tips[ti].y = ny;
+                }
+                None => {
+                    self.tips[ti].alive = false;
+                    return;
+                }
+            }
         }
-        if stepped {
-            self.tips[ti].x = cx as usize;
-            self.tips[ti].y = cy as usize;
-        } else {
-            self.tips[ti].alive = false;
+    }
+
+    /// Find an orthogonally- or diagonally-adjacent cell that is Mycelium and belongs to
+    /// `colony_id`, preferring the candidate with the FEWEST same-colony-mycelium neighbors of
+    /// its own (ties broken by fixed scan order).
+    ///
+    /// A grown strand is a simple path (growth never steps onto existing Mycelium), but a
+    /// winding one can still pass close to itself without touching, leaving a "chord": two
+    /// path cells that are 8-adjacent despite being far apart along the strand. A naive
+    /// first-match scan can hop across such a chord, and once it does, both cells behind the
+    /// jump get reverted while walking away from them -- stranding the skipped segment with no
+    /// remaining connection to anywhere the tip will ever visit again (a permanent stub, the
+    /// exact bug this rewrite is fixing). A plain path cell has at most 2 same-colony neighbors
+    /// (its predecessor and successor); a chord endpoint has 3+. Preferring the lower-degree
+    /// neighbor keeps the walk on the actual strand instead of jumping the chord.
+    fn adjacent_same_colony_mycelium(&self, x: usize, y: usize, colony_id: u8) -> Option<(usize, usize)> {
+        const D: [(isize, isize); 8] = [(-1,-1),(0,-1),(1,-1),(-1,0),(1,0),(-1,1),(0,1),(1,1)];
+        let (tx, ty) = (x as isize, y as isize);
+        let mut best: Option<(usize, usize)> = None;
+        let mut best_degree = i32::MAX;
+        for (dx, dy) in D {
+            let (nx, ny) = (tx + dx, ty + dy);
+            if !self.in_bounds(nx, ny) { continue; }
+            let (ux, uy) = (nx as usize, ny as usize);
+            if self.get(ux, uy) != Material::Mycelium || self.cell_aux(ux, uy) != colony_id { continue; }
+            let degree = self.same_colony_mycelium_degree(ux, uy, colony_id);
+            if degree < best_degree {
+                best_degree = degree;
+                best = Some((ux, uy));
+            }
         }
+        best
+    }
+
+    /// Count `colony_id`'s Mycelium cells among the 8 neighbors of (x, y).
+    fn same_colony_mycelium_degree(&self, x: usize, y: usize, colony_id: u8) -> i32 {
+        const D: [(isize, isize); 8] = [(-1,-1),(0,-1),(1,-1),(-1,0),(1,0),(-1,1),(0,1),(1,1)];
+        let (tx, ty) = (x as isize, y as isize);
+        let mut n = 0;
+        for (dx, dy) in D {
+            let (nx, ny) = (tx + dx, ty + dy);
+            if !self.in_bounds(nx, ny) { continue; }
+            let (ux, uy) = (nx as usize, ny as usize);
+            if self.get(ux, uy) == Material::Mycelium && self.cell_aux(ux, uy) == colony_id {
+                n += 1;
+            }
+        }
+        n
     }
 
     /// Choose the next cell for a tip: the passable (Empty/Soil) neighbor with the highest

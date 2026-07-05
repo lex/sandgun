@@ -134,8 +134,76 @@ fn starving_colony_recedes_and_world_sleeps() {
     let mut w = World::new(64, 64);
     // colony in EMPTY space (no soil to eat) -> pool stays 0 -> starves
     w.spawn_colony(32, 32);
-    for _ in 0..400 { w.step(); }
+    // Growth (up to STARVE_GRACE_TICKS=90 growth ticks) lays down a strand of up to ~90 cells,
+    // plus whatever P_MY_BRANCH_CHANCE branches add; recede then has to walk all of that back at
+    // P_MY_DIEBACK (default 1) cell per growth tick, so this needs a much bigger budget than the
+    // ~90-growth-tick grace period alone -- 2000 world steps is ~666 growth ticks, comfortably
+    // enough to grow and then fully recede before the assertions below.
+    for _ in 0..2000 { w.step(); }
     w.step();
     assert_eq!(w.tip_count(), 0, "starved tips die");
+    assert_eq!(w.cells_processed, 0, "receded, settled world sleeps");
+}
+
+fn count_mycelium(w: &World, dims: (usize, usize)) -> usize {
+    let (width, height) = dims;
+    let mut n = 0;
+    for x in 0..width {
+        for y in 0..height {
+            if w.get(x, y) == Material::Mycelium { n += 1; }
+        }
+    }
+    n
+}
+
+#[test]
+fn dieback_reverts_multiple_cells_per_tick() {
+    let mut w = World::new(64, 64);
+    // No branching, so there's exactly one tip growing one strand -- keeps the cell count
+    // delta attributable purely to recede_tip, not try_branch.
+    w.params.values[sandgun_core::params::P_MY_BRANCH_CHANCE] = 0.0;
+    w.params.values[sandgun_core::params::P_MY_DIEBACK] = 3.0;
+    // colony in EMPTY space (no soil to eat) -> pool stays 0 -> starves after the grace period,
+    // but until then the tip freely wanders/extends into empty cells, laying a multi-cell strand.
+    w.spawn_colony(32, 32);
+    // Grace period is 90 growth ticks (age_ticks > 90 is starving); my_grow_countdown starts at
+    // 0 so a world step is a growth tick every P_MY_GROWTH_INTERVAL (3) steps. Run exactly the
+    // grace period's worth of growth ticks so the colony is one tick shy of starving.
+    for _ in 0..(90 * 3) { w.step(); }
+    let before = count_mycelium(&w, (64, 64));
+    assert!(
+        before >= 4,
+        "need a multi-cell strand to exercise multi-cell dieback (only {before} mycelium cells)"
+    );
+    // One more growth tick: now starving (age_ticks == 91 > 90) -> recede_tip should revert
+    // P_MY_DIEBACK (3) cells this tick, not just 1.
+    for _ in 0..3 { w.step(); }
+    let after = count_mycelium(&w, (64, 64));
+    let reverted = before - after;
+    assert!(
+        reverted >= 3,
+        "P_MY_DIEBACK=3 should revert ~3 cells in a single recede tick, only {reverted} reverted"
+    );
+}
+
+#[test]
+fn winding_strand_fully_recedes_no_stubs() {
+    let mut w = World::new(64, 64);
+    // A single wandering tip in open space naturally winds (momentum bias competes with the
+    // per-step RNG jitter in pick_step), so this exercises recede_tip's "follow the actual
+    // strand backward" behavior rather than a straight-line special case.
+    w.params.values[sandgun_core::params::P_MY_BRANCH_CHANCE] = 0.0;
+    w.spawn_colony(32, 32);
+    // Grow past the grace period so it starts starving, then keep going long enough to fully
+    // unwind whatever strand it grew (grace ~90 growth ticks to grow, plus generous budget to
+    // recede at the default dieback rate) and for the world to settle.
+    for _ in 0..(400 * 3) { w.step(); }
+    w.step();
+    assert_eq!(w.tip_count(), 0, "starved tip should have died once fully receded");
+    assert_eq!(
+        count_mycelium(&w, (64, 64)),
+        0,
+        "winding strand should fully unwind -- no leftover dead-mycelium stubs"
+    );
     assert_eq!(w.cells_processed, 0, "receded, settled world sleeps");
 }
