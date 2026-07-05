@@ -34,7 +34,7 @@ fn mycelium_vein_burns_like_a_fuse() {
     // so grow() no longer consumes sim RNG draws every growth tick during this test. That shifts
     // exactly which chance() rolls land on P_ASH_CHANCE for each burnt cell, changing the ash
     // count without changing the underlying mechanic -- assert presence, not a tuned threshold.
-    assert!(count(&w, Material::Ash) > 0, "burnt mycelium leaves ash");
+    assert!(count(&w, Material::Ash) > 5, "burnt mycelium leaves ash");
     for _ in 0..600 {
         w.step();
     }

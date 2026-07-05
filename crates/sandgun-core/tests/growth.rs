@@ -1060,3 +1060,24 @@ fn full_lifecycle_world_still_sleeps_after_settling() {
     w.step();
     assert_eq!(w.cells_processed, 0, "full living world must return to sleep once settled");
 }
+
+#[test]
+fn painting_mycelium_does_not_seed_frontier() {
+    // Regression: Task 1 made the old growth frontier dormant by removing the seed_frontier_around
+    // call from paint(). Painted mycelium should no longer enter the old frontier model --
+    // the new model uses colonies/tips instead. This test locks that contract: painting
+    // a blob of mycelium does not trigger frontier growth.
+    let mut w = World::new(64, 64);
+    // Paint some soil first so the painted mycelium would HAVE a colonizable neighbor
+    // (if the old model were active, it would seed the frontier).
+    for x in 30..35 {
+        w.paint(x as i32, 32, 0, Material::Soil as u8);
+    }
+    // Paint a blob of mycelium adjacent to the soil
+    for x in 30..35 {
+        w.paint(x as i32, 31, 0, Material::Mycelium as u8);
+    }
+    // The old model would have seeded these cells into the frontier immediately on paint.
+    // The new dormant model must not: frontier stays empty.
+    assert_eq!(w.frontier_len(), 0, "painting mycelium must not seed the old frontier");
+}
