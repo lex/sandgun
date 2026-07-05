@@ -114,3 +114,28 @@ fn eating_soil_fills_the_colony_pool() {
     for _ in 0..300 { w.step(); }
     assert!(w.colony_pool(id) > before, "eating rich soil should fill the pool");
 }
+
+#[test]
+fn well_fed_colony_branches_up_to_the_cap() {
+    // World dims must be multiples of CHUNK (64); the brief's 96x96 example doesn't satisfy
+    // that (a pre-existing World::new invariant, unrelated to this task), so this uses 128x128
+    // with a proportionally scaled rich-soil field around the colony.
+    let mut w = World::new(128, 128);
+    for x in 10..118 { for y in 40..90 { w.paint(x as i32, y as i32, 0, Material::Soil as u8); w.set_soil_richness(x, y, 220); } }
+    w.spawn_colony(64, 65);
+    for _ in 0..300 { w.step(); }
+    let cap = 12; // P_MY_TIP_CAP default
+    assert!(w.tip_count() > 1, "a fed colony should branch");
+    assert!(w.tip_count() <= cap, "tips must not exceed the cap");
+}
+
+#[test]
+fn starving_colony_recedes_and_world_sleeps() {
+    let mut w = World::new(64, 64);
+    // colony in EMPTY space (no soil to eat) -> pool stays 0 -> starves
+    w.spawn_colony(32, 32);
+    for _ in 0..400 { w.step(); }
+    w.step();
+    assert_eq!(w.tip_count(), 0, "starved tips die");
+    assert_eq!(w.cells_processed, 0, "receded, settled world sleeps");
+}

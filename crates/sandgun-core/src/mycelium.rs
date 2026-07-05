@@ -1,12 +1,27 @@
 use crate::cell::Material;
 use crate::world::World;
 
+/// Soil richness above this floor counts as a "rich hit" worth branching toward (task 3's
+/// gradient-biased branching). A small floor above 0 so ordinary poor dirt doesn't trigger it.
+const BRANCH_RICH_FLOOR: u8 = 30;
+
+/// Germination grace, in growth ticks: a freshly spawned colony starts with an empty pool
+/// (nutrient_pool == 0) same as one that has truly starved, so pool == 0 alone can't
+/// distinguish "hasn't found food yet" from "never will". A colony gets this many growth ticks
+/// to find its first food (like a spore's stored reserve) before pool == 0 is treated as real
+/// starvation. Comfortably above the ~76-tick walk `tip_grows_toward_richer_substrate` needs to
+/// reach food, comfortably below the ~130-tick budget `starving_colony_recedes_and_world_sleeps`
+/// gives a colony with no food anywhere to fully recede and die.
+const STARVE_GRACE_TICKS: u32 = 90;
+
 #[derive(Clone, Copy)]
 pub struct Colony {
     pub id: u8,
     pub nutrient_pool: u32,
     pub tip_count: u16,
     pub alive: bool,
+    /// Growth ticks since this colony was spawned; see STARVE_GRACE_TICKS.
+    pub age_ticks: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -32,7 +47,7 @@ impl World {
     /// Create a colony rooted at (x,y): lay a mycelium cell (aux=colony id) and one tip.
     pub fn spawn_colony(&mut self, x: usize, y: usize) -> u8 {
         let id = (self.colonies.len() as u8).wrapping_add(1); // 1-based; v1 assumes < 255 colonies
-        self.colonies.push(Colony { id, nutrient_pool: 0, tip_count: 1, alive: true });
+        self.colonies.push(Colony { id, nutrient_pool: 0, tip_count: 1, alive: true, age_ticks: 0 });
         let i = self.idx(x, y);
         self.cells[i].material = Material::Mycelium as u8;
         self.cells[i].aux = id;
@@ -50,37 +65,84 @@ impl World {
     pub fn colony_tip_count(&self, id: u8) -> u16 {
         self.colonies.iter().find(|c| c.id == id).map(|c| c.tip_count).unwrap_or(0)
     }
+    /// True once a colony has had its germination grace period and still has an empty pool --
+    /// i.e. it's genuinely starving, not just newly spawned and yet to find its first food.
+    /// See STARVE_GRACE_TICKS.
+    fn colony_starving(&self, id: u8) -> bool {
+        self.colonies.iter().find(|c| c.id == id)
+            .map(|c| c.nutrient_pool == 0 && c.age_ticks > STARVE_GRACE_TICKS)
+            .unwrap_or(false)
+    }
     /// New growth entry point. Chunk-sleep safe: no-op when no live tips.
     pub fn grow_mycelium(&mut self) {
         if self.tips.iter().all(|t| !t.alive) { return; }
         let eat = self.params.values[crate::params::P_MY_EAT];
+        let cap = self.params.values[crate::params::P_MY_TIP_CAP].max(1.0) as u16;
+        let branch_chance = self.params.values[crate::params::P_MY_BRANCH_CHANCE];
+        let dieback = (self.params.values[crate::params::P_MY_DIEBACK].max(1.0)) as usize;
+        // Age every living colony by one growth tick (bounded by colony count; see
+        // STARVE_GRACE_TICKS for why age matters).
+        for c in self.colonies.iter_mut() {
+            if c.alive { c.age_ticks = c.age_ticks.saturating_add(1); }
+        }
         for ti in 0..self.tips.len() {
             if !self.tips[ti].alive { continue; }
-            self.extend_tip(ti, eat);
+            let colony_id = self.tips[ti].colony;
+            if self.colony_starving(colony_id) {
+                // Starvation: the colony can't sustain growth. Recede from the frontier inward
+                // instead of extending.
+                self.recede_tip(ti, dieback);
+                continue;
+            }
+            let rich_hit = self.extend_tip(ti, eat);
+            if !self.tips[ti].alive { continue; } // boxed in; pick_step found nowhere to go
+            let (x, y) = (self.tips[ti].x, self.tips[ti].y);
+            // Branch mechanism 1: stepping into rich soil spawns 1-2 new tips toward the food.
+            if let Some(r) = rich_hit {
+                if r > BRANCH_RICH_FLOOR {
+                    self.try_branch(colony_id, x, y, cap);
+                    self.try_branch(colony_id, x, y, cap);
+                }
+            }
+            // Branch mechanism 2: rare periodic branching, independent of richness.
+            if self.chance(branch_chance) {
+                self.try_branch(colony_id, x, y, cap);
+            }
         }
         self.tips.retain(|t| t.alive); // drop dead tips so the loop stays cheap
-        // Keep Colony.tip_count in sync with reality: it's set to 1 at spawn but never adjusted
-        // as tips die (or, later, branch), so recompute it from the live tips whenever the set
-        // of live tips changes. Cheap: bounded by colony/tip counts, and only runs on a growth
-        // tick (already gated by P_MY_GROWTH_INTERVAL).
+        // Keep Colony.tip_count in sync with reality: incremented as tips branch and (mostly)
+        // decremented as tips die, but recompute from the live tips here as a cheap safety net.
+        // Bounded by colony/tip counts, and only runs on a growth tick (already gated by
+        // P_MY_GROWTH_INTERVAL).
         for c in self.colonies.iter_mut() { c.tip_count = 0; }
         for t in self.tips.iter() {
             if let Some(c) = self.colonies.iter_mut().find(|c| c.id == t.colony) {
                 c.tip_count += 1;
             }
         }
+        // A colony that has fully receded (no live tips) and has nothing left to grow with
+        // (empty pool) is done: mark it dead so it's no longer reported as a living colony.
+        for c in self.colonies.iter_mut() {
+            if c.tip_count == 0 && c.nutrient_pool == 0 {
+                c.alive = false;
+            }
+        }
     }
 
-    fn extend_tip(&mut self, ti: usize, eat: f32) {
+    /// Extend a live tip by one cell. Returns the richness of the soil it ate into, if any
+    /// (used by the caller to decide whether this was a "rich hit" worth branching on).
+    fn extend_tip(&mut self, ti: usize, eat: f32) -> Option<u8> {
         let t = self.tips[ti];
-        let Some((nx, ny)) = self.pick_step(t) else { self.tips[ti].alive = false; return; };
+        let Some((nx, ny)) = self.pick_step(t) else { self.tips[ti].alive = false; return None; };
         let dst = self.material_at(nx, ny);
         let (ux, uy) = (nx as usize, ny as usize);
         // eat if stepping into soil
+        let mut eaten = None;
         if dst == Material::Soil {
-            let r = self.cell_aux(ux, uy) as f32;
+            let r = self.cell_aux(ux, uy);
+            eaten = Some(r);
             if let Some(c) = self.colonies.iter_mut().find(|c| c.id == t.colony) {
-                c.nutrient_pool = c.nutrient_pool.saturating_add((r * eat) as u32);
+                c.nutrient_pool = c.nutrient_pool.saturating_add((r as f32 * eat) as u32);
             }
         }
         let i = self.idx(ux, uy);
@@ -92,6 +154,54 @@ impl World {
         self.tips[ti].y = uy;
         self.tips[ti].last_dx = (nx - t.x as isize) as i8;
         self.tips[ti].last_dy = (ny - t.y as isize) as i8;
+        eaten
+    }
+
+    /// Spawn one new tip for `colony_id` at (x,y) if the colony's live tip count is under the
+    /// hard cap. The new tip starts with no momentum (last_dx/last_dy = 0); pick_step's own
+    /// richness-sampling and shuffle naturally diverge it from its sibling on the next tick
+    /// (its parent's cell is now occupied Mycelium, so it can't just retrace the same step).
+    fn try_branch(&mut self, colony_id: u8, x: usize, y: usize, cap: u16) {
+        if self.colony_tip_count(colony_id) >= cap { return; }
+        self.tips.push(Tip { x, y, colony: colony_id, last_dx: 0, last_dy: 0, alive: true });
+        if let Some(c) = self.colonies.iter_mut().find(|c| c.id == colony_id) {
+            c.tip_count += 1;
+        }
+    }
+
+    /// Starvation dieback: revert the tip's own cell to Empty (the strand recedes from its
+    /// end), then step the tip backward along the direction it last grew from, `dieback` cells
+    /// this tick. If there's nowhere left to recede into (out of bounds, or the cell behind
+    /// isn't this colony's mycelium -- reached the root, a branch point, or the strand already
+    /// receded past here), the tip dies.
+    fn recede_tip(&mut self, ti: usize, dieback: usize) {
+        let t = self.tips[ti];
+        let i = self.idx(t.x, t.y);
+        if Material::from_u8(self.cells[i].material) == Material::Mycelium {
+            self.cells[i].material = Material::Empty as u8;
+            self.cells[i].aux = 0;
+            self.cells[i].flags = 0;
+            self.wake(t.x, t.y);
+        }
+        let (mut cx, mut cy) = (t.x as isize, t.y as isize);
+        let mut stepped = false;
+        for _ in 0..dieback.max(1) {
+            let (bx, by) = (cx - t.last_dx as isize, cy - t.last_dy as isize);
+            if !self.in_bounds(bx, by) { break; }
+            let (bux, buy) = (bx as usize, by as usize);
+            if self.get(bux, buy) != Material::Mycelium || self.cell_aux(bux, buy) != t.colony {
+                break; // nothing left of this strand to recede into
+            }
+            cx = bx;
+            cy = by;
+            stepped = true;
+        }
+        if stepped {
+            self.tips[ti].x = cx as usize;
+            self.tips[ti].y = cy as usize;
+        } else {
+            self.tips[ti].alive = false;
+        }
     }
 
     /// Choose the next cell for a tip: the passable (Empty/Soil) neighbor with the highest
