@@ -290,3 +290,20 @@ grow in. Two horizons:
   (rooms, tunnels, biomes) stamped into the world, connected caverns to move through. Bigger
   worldgen redesign; likely pairs with M1d (big world + camera) since level structure matters
   most at real scale.
+
+## Bigger / more interesting / animated player model (Lex, 2026-07-05)
+Avatar is currently a small cyan AABB stamped into the RGBA buffer (M1b). Lex wants it
+bigger (more pixels), more interesting (an actual character shape — head/body/legs/gun, not a
+box), and ANIMATED (walk cycle, idle, jump). Notes:
+- Bigger avatar = larger collision AABB → affects movement feel + clearance (fit-checks,
+  tunnels). Tune together.
+- RENDER approach: cleanest is to draw the avatar as a sprite on the SEPARATE 2D overlay
+  canvas at the avatar's screen position (decoupled from cell resolution) rather than stamping
+  cells — allows detailed art + frame animation without cramming into the material grid or
+  touching the sim. Sim keeps the AABB for collision; overlay draws the pretty animated sprite
+  on top. (Current stamp-into-RGBA approach limits detail to cell resolution.)
+- Animation: frame-based sprite sheet (inline data-uri, CSP-safe) OR procedural (limbs as
+  a few oscillating rects driven by avatar velocity/on_ground/facing). Procedural is cheap and
+  needs no art assets; sprite sheet looks better but needs art.
+- Facing direction (from aim/velocity), walk vs idle vs jump/fall states from avatar flags.
+Own small task; can be standalone after M1e (or slot in whenever). Not blocking.
