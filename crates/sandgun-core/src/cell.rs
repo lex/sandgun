@@ -43,6 +43,12 @@ impl Material {
     pub fn is_gas(self) -> bool {
         matches!(self, Material::SporeGas | Material::Smoke)
     }
+    /// Cells a flying projectile ray-marches straight through instead of impacting:
+    /// empty space, gases, and Fire (a transient flame, not terrain -- a projectile
+    /// should never detonate on flames left behind by an earlier shot).
+    pub fn is_projectile_passable(self) -> bool {
+        self == Material::Empty || self.is_gas() || self == Material::Fire
+    }
     /// Static solids: never move (they can still burn).
     pub fn is_solid(self) -> bool {
         matches!(self, Material::Rock | Material::Mycelium | Material::MushroomFlesh)

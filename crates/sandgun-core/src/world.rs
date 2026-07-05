@@ -411,7 +411,7 @@ impl World {
                     break;
                 }
                 let m = self.material_at(cx, cy);
-                if m == Material::Empty || m.is_gas() {
+                if m.is_projectile_passable() {
                     p.x = nx;
                     p.y = ny;
                 } else {
