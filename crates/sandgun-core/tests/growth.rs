@@ -808,6 +808,14 @@ fn burning_mushroom_leaves_sparse_ash() {
     w.set_param(sandgun_core::params::P_FLAM_FLESH as u32, 1.0); // guarantee ignition on contact
     w.set_param(sandgun_core::params::P_FUEL_FLESH as u32, 1.0); // burn out almost immediately
 
+    // M1e task 5: unsupported Mycelium/MushroomFlesh detaches and falls when a carve/burn
+    // disturbs it. A flesh slab with no anchor at all would be judged unsupported the moment the
+    // first edge cell burns away, dropping the whole remaining slab as unburnt falling debris
+    // before it can finish burning to ash -- which is the right call for a truly floating mass,
+    // but not what this test (burn-to-ash ratio) is exercising. Anchor it to rock along the
+    // bottom, like a mushroom actually growing on the ground, so it stays put and burns through.
+    for x in 19..31 { w.paint(x, 30, 0, Material::Rock as u8); }
+
     let mut flesh_count = 0usize;
     for x in 20..30 {
         for y in 20..30 {

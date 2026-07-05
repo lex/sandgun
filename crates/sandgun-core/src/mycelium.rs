@@ -1,5 +1,6 @@
-use crate::cell::Material;
+use crate::cell::{Cell, Material};
 use crate::world::World;
+use std::collections::HashSet;
 
 /// Soil richness above this floor counts as a "rich hit" worth branching toward (task 3's
 /// gradient-biased branching). A small floor above 0 so ordinary poor dirt doesn't trigger it.
@@ -14,6 +15,18 @@ const BRANCH_RICH_FLOOR: u8 = 30;
 /// this on top of the grace period, since receding a strand this long back to nothing costs one
 /// growth tick per P_MY_DIEBACK cells (see recede_tip).
 const STARVE_GRACE_TICKS: u32 = 90;
+
+/// Cap on cells visited by a single connected-group flood in `drop_unsupported_around` (task 5).
+/// Keeps the carve/burn-triggered support check cheap and chunk-sleep-safe -- it never scans the
+/// whole world, only the local mass reachable from wherever cells were just removed. If a group
+/// is still not fully explored once this many cells have been visited, the check bails WITHOUT
+/// touching anything: an unverified mass is treated as supported (err toward not dropping) rather
+/// than risk wrongly detaching (or spending unbounded time walking) a huge structure.
+const DROP_FLOOD_BUDGET: usize = 4000;
+
+/// Downward velocity given to a cell that falls because its group lost all anchor support.
+/// Small and mostly-vertical (a gentle detach, not an explosion) per the task 5 brief.
+const DROP_FALL_VY: f32 = 0.6;
 
 #[derive(Clone, Copy)]
 pub struct Colony {
@@ -101,6 +114,15 @@ impl World {
         }
         for ti in 0..self.tips.len() {
             if !self.tips[ti].alive { continue; }
+            // Task 5 guard: a carve or burn may have removed the cell this tip sits on (directly,
+            // or via drop_unsupported_around dropping its whole disconnected group). Such a tip
+            // has nothing left to extend from -- kill it instead of silently growing a fresh
+            // strand out of thin air at its stale (x, y).
+            let (tx, ty) = (self.tips[ti].x, self.tips[ti].y);
+            if self.get(tx, ty) != Material::Mycelium {
+                self.tips[ti].alive = false;
+                continue;
+            }
             let colony_id = self.tips[ti].colony;
             if self.colony_starving(colony_id) {
                 // Starvation: the colony can't sustain growth. Recede from the frontier inward
@@ -326,5 +348,88 @@ impl World {
             if score > best_score { best_score = score; best = Some((nx, ny)); }
         }
         best
+    }
+
+    /// Task 5 support/anchor check. Call this after a carve or burn removes Mycelium/
+    /// MushroomFlesh cells centered at (cx, cy): any surviving Mycelium/MushroomFlesh nearby may
+    /// have just lost its only path to an anchor (Rock or Soil terrain). For every such cell
+    /// within `radius` of the removal, flood-fill its connected group (8-connectivity, matching
+    /// how strands actually connect to their diagonal neighbors elsewhere in this module -- see
+    /// `adjacent_same_colony_mycelium`) and check whether ANY cell in the group is orthogonally
+    /// adjacent to an anchor. An unsupported group detaches entirely: every one of its cells
+    /// becomes a falling particle (its own material, a small downward velocity) and is cleared.
+    /// A supported group is left untouched.
+    ///
+    /// This is a one-shot flood triggered only by an active event (carve/burn), never a per-frame
+    /// scan -- it stays local and budgeted (see DROP_FLOOD_BUDGET) so it can't cost more than a
+    /// bounded amount of work even on a huge, fully-anchored mycelium mass, and it never leaves
+    /// anything mid-flight that would keep the world awake once the dropped cells' particles land.
+    pub fn drop_unsupported_around(&mut self, cx: isize, cy: isize, radius: isize) {
+        let mut visited: HashSet<(isize, isize)> = HashSet::new();
+        for dy in -radius..=radius {
+            for dx in -radius..=radius {
+                let (x, y) = (cx + dx, cy + dy);
+                if !self.in_bounds(x, y) || visited.contains(&(x, y)) {
+                    continue;
+                }
+                let m = self.material_at(x, y);
+                if m == Material::Mycelium || m == Material::MushroomFlesh {
+                    self.flood_group_and_maybe_drop(x, y, &mut visited);
+                }
+            }
+        }
+    }
+
+    /// Flood-fill the Mycelium/MushroomFlesh group connected to (sx, sy) (8-connectivity),
+    /// marking every visited cell in `visited` so the caller's seed loop never reprocesses it.
+    /// Bailing out (over budget) leaves the group entirely untouched -- no cells are mutated
+    /// until the WHOLE group has been confirmed both fully explored and unsupported.
+    fn flood_group_and_maybe_drop(&mut self, sx: isize, sy: isize, visited: &mut HashSet<(isize, isize)>) {
+        const D8: [(isize, isize); 8] = [(-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)];
+        const D4: [(isize, isize); 4] = [(0, -1), (0, 1), (-1, 0), (1, 0)];
+        let mut queue: Vec<(isize, isize)> = vec![(sx, sy)];
+        visited.insert((sx, sy));
+        let mut group: Vec<(usize, usize)> = Vec::new();
+        let mut supported = false;
+        let mut qi = 0;
+        while qi < queue.len() {
+            if group.len() >= DROP_FLOOD_BUDGET {
+                // Exceeded the budget before the group was fully explored: err toward "supported"
+                // and leave everything as-is, per the task 5 ruling.
+                return;
+            }
+            let (x, y) = queue[qi];
+            qi += 1;
+            group.push((x as usize, y as usize));
+            for (dx, dy) in D4 {
+                let am = self.material_at(x + dx, y + dy);
+                if am == Material::Rock || am == Material::Soil {
+                    supported = true;
+                }
+            }
+            for (dx, dy) in D8 {
+                let (nx, ny) = (x + dx, y + dy);
+                if !self.in_bounds(nx, ny) || visited.contains(&(nx, ny)) {
+                    continue;
+                }
+                let m = self.material_at(nx, ny);
+                if m == Material::Mycelium || m == Material::MushroomFlesh {
+                    visited.insert((nx, ny));
+                    queue.push((nx, ny));
+                }
+            }
+        }
+        if supported {
+            return;
+        }
+        // Unsupported: the whole group detaches and falls, dying as inert matter on landing (the
+        // existing particle system already resettles pixels-as-particles -- no re-rooting here).
+        for (ux, uy) in group {
+            let i = self.idx(ux, uy);
+            let mat = self.cells[i].material;
+            self.cells[i] = Cell::default();
+            self.spawn_particle(ux as f32 + 0.5, uy as f32 + 0.5, 0.0, DROP_FALL_VY, mat);
+            self.wake(ux, uy);
+        }
     }
 }

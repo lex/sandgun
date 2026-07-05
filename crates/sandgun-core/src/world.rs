@@ -510,6 +510,10 @@ impl World {
                 self.wake(ux, uy);
             }
         }
+        // Task 5: cells just carved away may have been the only link some Mycelium/MushroomFlesh
+        // nearby had to an anchor. Check a bit past the crater's own radius so the flood's seed
+        // search reaches the surviving cells right at the edge of what was just removed.
+        self.drop_unsupported_around(cx, cy, radius + 2);
     }
 
     fn ignite_blast(&mut self, cx: isize, cy: isize, radius: isize) {
@@ -795,6 +799,12 @@ impl World {
             self.cells[i] = product_cell;
             self.stamp[i] = self.frame_u8();
             self.wake(x, y);
+            // Task 5: a Mycelium/MushroomFlesh cell just burned away -- its neighbors may have
+            // lost their only link to an anchor. Radius is small (a single cell was removed);
+            // it only needs to reach the 8 surrounding cells to seed the flood.
+            if matches!(mat, Material::Mycelium | Material::MushroomFlesh) {
+                self.drop_unsupported_around(x as isize, y as isize, 2);
+            }
             return;
         }
         self.cells[i].aux -= 1;

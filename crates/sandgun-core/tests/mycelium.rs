@@ -1,4 +1,5 @@
 use sandgun_core::cell::Material;
+use sandgun_core::projectile::Ammo;
 use sandgun_core::world::World;
 
 #[test]
@@ -306,4 +307,83 @@ fn winding_strand_fully_recedes_no_stubs() {
         "winding strand should fully unwind -- no leftover dead-mycelium stubs"
     );
     assert_eq!(w.cells_processed, 0, "receded, settled world sleeps");
+}
+
+// --- Task 5: support/anchor -- carve-flood; unsupported chunks fall & die ---
+
+#[test]
+fn severed_mycelium_bridge_falls() {
+    let mut w = World::new(64, 64);
+    w.paint(5, 32, 0, Material::Rock as u8); // anchor
+    // a long mycelium bridge from the anchor (x=6, touching the rock) out to a floating far end
+    for x in 6..40 { w.paint(x as i32, 32, 0, Material::Mycelium as u8); }
+    let particles_before = w.particle_count();
+    // carve straight down into the middle of the bridge (x=23), splitting it in two
+    w.fire(23.5, 27.0, 0.0, 8.0, Ammo::Kinetic as u8);
+    w.step(); // impact + carve + the resulting support check, all this frame
+    assert!(
+        w.particle_count() > particles_before,
+        "the disconnected far piece should become falling particles"
+    );
+    for _ in 0..400 { w.step(); } // let debris fall/settle
+    // near side (still connected to the rock through x=6) should remain
+    assert!(
+        (6..15).any(|x| w.get(x, 32) == Material::Mycelium),
+        "the side still connected to the anchor should stay put"
+    );
+    // far side (was disconnected by the carve, no anchor within reach) should have fallen away
+    for x in 30..39 {
+        assert_ne!(
+            w.get(x, 32),
+            Material::Mycelium,
+            "disconnected piece at x={x} should have fallen, not stayed in place"
+        );
+    }
+}
+
+#[test]
+fn anchored_mycelium_stays() {
+    let mut w = World::new(64, 64);
+    w.paint(5, 32, 0, Material::Rock as u8); // anchor
+    // a short strand entirely rooted at the anchor -- carving its far end must not drop the part
+    // that's still connected all the way back to the rock.
+    for x in 6..21 { w.paint(x as i32, 32, 0, Material::Mycelium as u8); }
+    w.fire(17.5, 27.0, 0.0, 8.0, Ammo::Kinetic as u8); // carve near the far end, away from the rock
+    w.step();
+    for _ in 0..200 { w.step(); }
+    assert!(
+        (6..11).all(|x| w.get(x, 32) == Material::Mycelium),
+        "mycelium still connected to an anchor must not be dropped by a nearby carve"
+    );
+}
+
+#[test]
+fn settle_after_drop() {
+    let mut w = World::new(64, 64);
+    for x in 0..64 { w.paint(x as i32, 63, 0, Material::Rock as u8); } // floor to catch debris
+    w.paint(5, 32, 0, Material::Rock as u8); // anchor
+    for x in 6..40 { w.paint(x as i32, 32, 0, Material::Mycelium as u8); }
+    w.fire(23.5, 27.0, 0.0, 8.0, Ammo::Kinetic as u8);
+    w.step();
+    for _ in 0..400 { w.step(); }
+    assert_eq!(w.particle_count(), 0, "dropped debris should have landed by now");
+    w.step();
+    assert_eq!(w.cells_processed, 0, "world should settle again once the drop resolves");
+}
+
+#[test]
+fn tip_on_removed_cell_dies_instead_of_regrowing_from_nothing() {
+    let mut w = World::new(64, 64);
+    w.spawn_colony(32, 32); // tip starts exactly on this cell, with no anchor nearby
+    assert_eq!(w.tip_count(), 1);
+    // carve straight through the colony's own origin/tip cell
+    w.fire(27.5, 32.5, 12.0, 0.0, Ammo::Kinetic as u8);
+    w.step(); // impact clears (32, 32) this frame
+    assert_eq!(w.get(32, 32), Material::Empty, "the carve should have cleared the tip's cell");
+    for _ in 0..10 { w.step(); } // let a growth tick run with the tip's cell gone
+    assert_eq!(
+        w.tip_count(),
+        0,
+        "a tip whose current cell is no longer Mycelium must die, not regrow from nothing"
+    );
 }
