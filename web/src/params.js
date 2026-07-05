@@ -6,12 +6,12 @@ const INDEX = {
   acid_etch: 12, acid_etch_rock: 13,
   kinetic_radius: 14, kinetic_ejecta: 15, incendiary_radius: 16,
   acid_blob_radius: 17, spore_blob_radius: 18,
-  growth_interval: 19, growth_budget: 20, max_mushrooms: 21,
-  mush_height_min: 22, mush_height_max: 23, mush_cap_min: 24, mush_cap_max: 25,
-  mush_reveal: 26, gunfire_spore_chance: 27, ash_chance: 28,
-  my_growth_interval: 29, my_tip_cap: 30, my_eat: 31, my_fruit_threshold: 32,
-  my_fruit_cost: 33, my_dieback: 34, my_branch_chance: 35, my_worldgen_colonies: 36,
-  soil_richness_min: 37, soil_richness_max: 38, mush_lifespan: 39,
+  max_mushrooms: 19,
+  mush_height_min: 20, mush_height_max: 21, mush_cap_min: 22, mush_cap_max: 23,
+  mush_reveal: 24, gunfire_spore_chance: 25, ash_chance: 26,
+  my_growth_interval: 27, my_tip_cap: 28, my_eat: 29, my_fruit_threshold: 30,
+  my_fruit_cost: 31, my_dieback: 32, my_branch_chance: 33, my_worldgen_colonies: 34,
+  soil_richness_min: 35, soil_richness_max: 36, mush_lifespan: 37,
 };
 
 export async function loadParams(world) {

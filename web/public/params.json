@@ -18,8 +18,6 @@
   "incendiary_radius": 3,
   "acid_blob_radius": 3,
   "spore_blob_radius": 4,
-  "growth_interval": 3,
-  "growth_budget": 24,
   "max_mushrooms": 6,
   "mush_height_min": 6,
   "mush_height_max": 16,

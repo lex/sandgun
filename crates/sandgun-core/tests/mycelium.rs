@@ -233,19 +233,21 @@ fn mushroom_decays_after_lifespan() {
 #[test]
 fn mushroom_reveals_at_one_rate_not_double() {
     // Regression (M1e task 4 review): both the old dormant grow() and the new grow_mycelium()
-    // called grow_mushrooms() on the same shared self.mushrooms/self.caps. Both cadences default
-    // to P_GROWTH_INTERVAL/P_MY_GROWTH_INTERVAL == 3 with countdowns starting at 0, so a single
-    // growth tick revealed 2x P_MUSH_REVEAL cells instead of 1x. grow_mycelium (mycelium.rs) is
-    // now the sole owner of mushroom reveal/decay.
+    // used to call grow_mushrooms() on the same shared self.mushrooms/self.caps, each on its own
+    // cadence, so a single growth tick could reveal 2x P_MUSH_REVEAL cells instead of 1x. That
+    // race is now structurally impossible: the old dormant grow() call site (and its
+    // grow_countdown/P_GROWTH_INTERVAL cadence) is gone entirely -- grow_mycelium (mycelium.rs)
+    // is the sole owner of mushroom reveal/decay, driven only by P_MY_GROWTH_INTERVAL /
+    // my_grow_countdown. This test now just pins down that one-tick-one-reveal invariant.
     let mut w = World::new(64, 64);
     assert!(w.try_fruit(32, 40), "mushroom should fit in open space");
     let reveal = w.params.values[sandgun_core::params::P_MUSH_REVEAL] as usize;
     let before = count_material(&w, (64, 64), Material::MushroomFlesh);
     assert_eq!(before, 0, "freshly fruited mushroom shouldn't have revealed any flesh yet");
-    // Step exactly one growth-interval's worth of frames. grow_countdown/my_grow_countdown both
-    // start at 0, so the growth tick(s) fire on the very first step and the cadence stays quiet
-    // for the rest of the interval -- this window contains exactly one tick from each cadence.
-    let interval = w.params.values[sandgun_core::params::P_GROWTH_INTERVAL] as usize;
+    // Step exactly one growth-interval's worth of frames. my_grow_countdown starts at 0, so the
+    // growth tick fires on the very first step and the cadence stays quiet for the rest of the
+    // interval -- this window contains exactly one growth tick.
+    let interval = w.params.values[sandgun_core::params::P_MY_GROWTH_INTERVAL] as usize;
     for _ in 0..interval {
         w.step();
     }
@@ -255,6 +257,47 @@ fn mushroom_reveals_at_one_rate_not_double() {
         revealed, reveal,
         "mushroom reveal must run once per growth tick (P_MUSH_REVEAL={reveal}), not twice (got {revealed})"
     );
+}
+
+// --- Review fix: global mushroom cap (repurposes P_MAX_MUSHROOMS) ---
+
+#[test]
+fn global_mushroom_cap_is_respected() {
+    // Regression (M1e task 6 review): fruit_fed_colonies throttles to one mushroom per alive
+    // colony per growth tick, but had no cap on the TOTAL number of simultaneous mushrooms --
+    // enough well-fed colonies could keep fruiting forever. P_MAX_MUSHROOMS sat declared but
+    // dead (a leftover from the old model); this test drives several fed colonies past a small
+    // cap and asserts the in-flight mushroom count never exceeds it.
+    let mut w = World::new(128, 128);
+    for x in 0..128 {
+        w.paint(x, 60, 0, Material::Rock as u8); // floor so every colony has fruiting headroom above
+    }
+    w.set_param(sandgun_core::params::P_MAX_MUSHROOMS as u32, 3.0);
+
+    // Several colonies, spread out so their fruiting footprints don't collide with each other,
+    // each pre-fed above P_MY_FRUIT_THRESHOLD so every one of them wants to fruit every tick its
+    // pool allows.
+    let mut ids = Vec::new();
+    for x in [10usize, 30, 50, 70, 90, 110] {
+        let id = w.spawn_colony(x, 55);
+        w.set_colony_pool(id, 100_000); // never runs dry across the whole run
+        ids.push(id);
+    }
+
+    let mut max_seen = 0usize;
+    for _ in 0..2000 {
+        w.step();
+        // "simultaneous" mushrooms means every one currently visible on the map: still growing
+        // (mushrooms) or fully grown and counting down to crumble (decaying_mushrooms) both still
+        // occupy MushroomFlesh cells on screen.
+        let in_flight = w.mushroom_len() + w.decaying_mushroom_len();
+        max_seen = max_seen.max(in_flight);
+        assert!(
+            in_flight <= 3,
+            "in-flight mushroom count {in_flight} exceeded cap 3 (P_MAX_MUSHROOMS)"
+        );
+    }
+    assert!(max_seen > 0, "setup: expected at least one mushroom to have fruited during the run");
 }
 
 #[test]

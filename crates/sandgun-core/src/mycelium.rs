@@ -179,9 +179,18 @@ impl World {
     /// P_MY_FRUIT_COST from the pool only on an actual spawn (a footprint that doesn't fit costs
     /// nothing -- the colony just tries again on a later growth tick once it or the world has
     /// moved). At most one fruiting per colony per tick, bounded by live colony/tip counts.
+    ///
+    /// Global cap (P_MAX_MUSHROOMS, review fix): without this, enough well-fed colonies could
+    /// keep fruiting forever with no ceiling on how many mushrooms exist at once. "Simultaneous"
+    /// means every mushroom still visible on the map -- both still growing (`self.mushrooms`) and
+    /// fully grown but not yet crumbled (`self.decaying_mushrooms`) occupy real MushroomFlesh
+    /// cells on screen, so both count toward the cap. Checked once per colony (not just once per
+    /// tick) so a cap reached mid-loop stops the rest of this tick's fruiting immediately, rather
+    /// than letting later colonies squeeze in one more before the count is rechecked.
     fn fruit_fed_colonies(&mut self) {
         let threshold = self.params.values[crate::params::P_MY_FRUIT_THRESHOLD].max(0.0) as u32;
         let cost = self.params.values[crate::params::P_MY_FRUIT_COST].max(0.0) as u32;
+        let cap = self.params.values[crate::params::P_MAX_MUSHROOMS].max(0.0) as usize;
         let fed: Vec<u8> = self
             .colonies
             .iter()
@@ -189,6 +198,9 @@ impl World {
             .map(|c| c.id)
             .collect();
         for colony_id in fed {
+            if self.mushrooms.len() + self.decaying_mushrooms.len() >= cap {
+                break; // at the global simultaneous-mushroom cap; no more fruiting this tick
+            }
             let candidates: Vec<(usize, usize)> = self
                 .tips
                 .iter()
@@ -472,6 +484,13 @@ pub struct DecayingMushroom {
 impl World {
     pub fn mushroom_len(&self) -> usize {
         self.mushrooms.len()
+    }
+
+    /// Count of mushrooms that have finished growing and are now counting down to crumble.
+    /// Still visible (still occupying MushroomFlesh cells) so it counts toward the global
+    /// simultaneous-mushroom cap (P_MAX_MUSHROOMS) alongside `mushroom_len`.
+    pub fn decaying_mushroom_len(&self) -> usize {
+        self.decaying_mushrooms.len()
     }
 
     /// Reveal more of each growing mushroom this tick; retire finished ones into

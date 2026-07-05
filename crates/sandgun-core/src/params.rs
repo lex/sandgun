@@ -21,30 +21,29 @@ pub const P_ACID_BLOB_RADIUS: usize = 17;
 pub const P_SPORE_BLOB_RADIUS: usize = 18;
 // --- Parametric mushroom shape/decay (kept from the old M1c growth model; fruiting is now
 // triggered by the M1e colony economy below, not these) ---
-pub const P_GROWTH_INTERVAL: usize = 19; // currently unused (old growth cadence removed in M1e
-                                          // task 6); kept declared, not reassigned
-pub const P_GROWTH_BUDGET: usize = 20;   // currently unused, ditto
-pub const P_MAX_MUSHROOMS: usize = 21;   // currently unused, ditto (no cap wired to the new fruiting path)
-pub const P_MUSH_HEIGHT_MIN: usize = 22;
-pub const P_MUSH_HEIGHT_MAX: usize = 23;
-pub const P_MUSH_CAP_MIN: usize = 24;
-pub const P_MUSH_CAP_MAX: usize = 25;
-pub const P_MUSH_REVEAL: usize = 26;     // cells revealed per growth tick per mushroom
-pub const P_GUNFIRE_SPORE_CHANCE: usize = 27; // 0..1 a carved flesh cell releases spore gas
-pub const P_ASH_CHANCE: usize = 28; // 0..1 chance burnt-out Mycelium/MushroomFlesh leaves Ash (else Empty)
+// (P_GROWTH_INTERVAL and P_GROWTH_BUDGET -- the old growth cadence/budget -- were removed in the
+// M1e task 6 review: fully unused once the dormant grow() call site was deleted.)
+pub const P_MAX_MUSHROOMS: usize = 19;   // global cap on simultaneous mushrooms (growing + decaying); see fruit_fed_colonies
+pub const P_MUSH_HEIGHT_MIN: usize = 20;
+pub const P_MUSH_HEIGHT_MAX: usize = 21;
+pub const P_MUSH_CAP_MIN: usize = 22;
+pub const P_MUSH_CAP_MAX: usize = 23;
+pub const P_MUSH_REVEAL: usize = 24;     // cells revealed per growth tick per mushroom
+pub const P_GUNFIRE_SPORE_CHANCE: usize = 25; // 0..1 a carved flesh cell releases spore gas
+pub const P_ASH_CHANCE: usize = 26; // 0..1 chance burnt-out Mycelium/MushroomFlesh leaves Ash (else Empty)
 // --- M1e living mycelium (the only growth model) ---
-pub const P_MY_GROWTH_INTERVAL: usize = 29; // frames between mycelium growth ticks
-pub const P_MY_TIP_CAP: usize = 30;         // max live tips per colony
-pub const P_MY_EAT: usize = 31;             // richness->pool multiplier when a tip eats soil
-pub const P_MY_FRUIT_THRESHOLD: usize = 32; // nutrient pool needed to fruit
-pub const P_MY_FRUIT_COST: usize = 33;      // pool spent per fruiting event
-pub const P_MY_DIEBACK: usize = 34;         // dieback rate
-pub const P_MY_BRANCH_CHANCE: usize = 35;   // 0..1 periodic branch chance per tip
-pub const P_MY_WORLDGEN_COLONIES: usize = 36; // number of colony origins seeded at worldgen
-pub const P_SOIL_RICHNESS_MIN: usize = 37;  // worldgen baseline soil richness (aux) lower bound
-pub const P_SOIL_RICHNESS_MAX: usize = 38;  // worldgen baseline soil richness (aux) upper bound
-pub const P_MUSH_LIFESPAN: usize = 39;      // growth ticks a completed mushroom lives before decaying
-pub const P_COUNT: usize = 40;
+pub const P_MY_GROWTH_INTERVAL: usize = 27; // frames between mycelium growth ticks
+pub const P_MY_TIP_CAP: usize = 28;         // max live tips per colony
+pub const P_MY_EAT: usize = 29;             // richness->pool multiplier when a tip eats soil
+pub const P_MY_FRUIT_THRESHOLD: usize = 30; // nutrient pool needed to fruit
+pub const P_MY_FRUIT_COST: usize = 31;      // pool spent per fruiting event
+pub const P_MY_DIEBACK: usize = 32;         // dieback rate
+pub const P_MY_BRANCH_CHANCE: usize = 33;   // 0..1 periodic branch chance per tip
+pub const P_MY_WORLDGEN_COLONIES: usize = 34; // number of colony origins seeded at worldgen
+pub const P_SOIL_RICHNESS_MIN: usize = 35;  // worldgen baseline soil richness (aux) lower bound
+pub const P_SOIL_RICHNESS_MAX: usize = 36;  // worldgen baseline soil richness (aux) upper bound
+pub const P_MUSH_LIFESPAN: usize = 37;      // growth ticks a completed mushroom lives before decaying
+pub const P_COUNT: usize = 38;
 
 /// Hot-tunable sim parameters. Index constants are mirrored in web/src/params.js — keep in sync.
 pub struct Params {
@@ -73,8 +72,6 @@ impl Default for Params {
         v[P_INCENDIARY_RADIUS] = 3.0;
         v[P_ACID_BLOB_RADIUS] = 3.0;
         v[P_SPORE_BLOB_RADIUS] = 4.0;
-        v[P_GROWTH_INTERVAL] = 3.0;
-        v[P_GROWTH_BUDGET] = 24.0;
         v[P_MAX_MUSHROOMS] = 6.0;
         v[P_MUSH_HEIGHT_MIN] = 6.0;
         v[P_MUSH_HEIGHT_MAX] = 16.0;
