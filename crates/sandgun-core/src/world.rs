@@ -44,6 +44,8 @@ pub struct World {
     pub(crate) frontier: Vec<FrontierCell>,
     pub(crate) mushrooms: Vec<GrowingMushroom>,
     pub(crate) grow_countdown: u32,
+    /// Cadence gate for grow_mycelium(), mirroring grow_countdown for old growth (P_MY_GROWTH_INTERVAL).
+    pub(crate) my_grow_countdown: u32,
     /// Completed mushroom caps that periodically puff spores: (x, y, puff_countdown, remaining_puffs).
     /// Finite (remaining_puffs starts at 3) so the world can eventually sleep once caps are spent.
     pub(crate) caps: Vec<(usize, usize, u32, u8)>,
@@ -79,6 +81,7 @@ impl World {
             frontier: Vec::new(),
             mushrooms: Vec::new(),
             grow_countdown: 0,
+            my_grow_countdown: 0,
             caps: Vec::new(),
             frontier_drops: 0,
             colonies: Vec::new(),
@@ -120,6 +123,7 @@ impl World {
         self.mushrooms.clear();
         self.caps.clear();
         self.grow_countdown = 0;
+        self.my_grow_countdown = 0;
         self.frontier_drops = 0;
         self.colonies.clear();
         self.tips.clear();
@@ -355,7 +359,13 @@ impl World {
             self.grow_countdown = (self.params.values[crate::params::P_GROWTH_INTERVAL] as u32).max(1);
         }
         self.grow_countdown -= 1;
-        self.grow_mycelium();
+        // Budgeted mycelium growth on the P_MY_GROWTH_INTERVAL cadence (chunk-sleep safe:
+        // grow_mycelium() no-ops when there are no live tips).
+        if self.my_grow_countdown == 0 {
+            self.grow_mycelium();
+            self.my_grow_countdown = (self.params.values[crate::params::P_MY_GROWTH_INTERVAL] as u32).max(1);
+        }
+        self.my_grow_countdown = self.my_grow_countdown.saturating_sub(1);
         self.update_projectiles();
         self.update_particles();
         self.update_avatar();

@@ -46,6 +46,10 @@ impl World {
     pub fn colony_pool(&self, id: u8) -> u32 {
         self.colonies.iter().find(|c| c.id == id).map(|c| c.nutrient_pool).unwrap_or(0)
     }
+    /// Live tip count recorded on a colony (test hook; kept in sync by grow_mycelium as tips die).
+    pub fn colony_tip_count(&self, id: u8) -> u16 {
+        self.colonies.iter().find(|c| c.id == id).map(|c| c.tip_count).unwrap_or(0)
+    }
     /// New growth entry point. Chunk-sleep safe: no-op when no live tips.
     pub fn grow_mycelium(&mut self) {
         if self.tips.iter().all(|t| !t.alive) { return; }
@@ -55,6 +59,16 @@ impl World {
             self.extend_tip(ti, eat);
         }
         self.tips.retain(|t| t.alive); // drop dead tips so the loop stays cheap
+        // Keep Colony.tip_count in sync with reality: it's set to 1 at spawn but never adjusted
+        // as tips die (or, later, branch), so recompute it from the live tips whenever the set
+        // of live tips changes. Cheap: bounded by colony/tip counts, and only runs on a growth
+        // tick (already gated by P_MY_GROWTH_INTERVAL).
+        for c in self.colonies.iter_mut() { c.tip_count = 0; }
+        for t in self.tips.iter() {
+            if let Some(c) = self.colonies.iter_mut().find(|c| c.id == t.colony) {
+                c.tip_count += 1;
+            }
+        }
     }
 
     fn extend_tip(&mut self, ti: usize, eat: f32) {
