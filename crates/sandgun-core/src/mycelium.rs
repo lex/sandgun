@@ -125,7 +125,7 @@ impl World {
             }
             let colony_id = self.tips[ti].colony;
             if self.colony_starving(colony_id) {
-                // Starvation: the colony can't sustain growth. Recede from the frontier inward
+                // Starvation: the colony can't sustain growth. Recede from the tip inward
                 // instead of extending.
                 self.recede_tip(ti, dieback);
                 continue;
@@ -431,5 +431,265 @@ impl World {
             self.spawn_particle(ux as f32 + 0.5, uy as f32 + 0.5, 0.0, DROP_FALL_VY, mat);
             self.wake(ux, uy);
         }
+    }
+}
+
+// --- Parametric mushroom shapes (kept from the old M1c growth model; M1e task 6) ---
+//
+// Fruiting itself is now driven purely by the colony nutrient economy (`fruit_fed_colonies`
+// above), but the actual mushroom SHAPE -- a stem that wanders gently as it rises, topped by an
+// upper-hemisphere cap dome -- and its cell-by-cell reveal/decay are unchanged from M1c. This
+// section is the single source of truth for that shape (`mushroom_footprint`), the growing-list
+// reveal (`grow_mushrooms`/`reveal_mushroom`), the fit-check + spawn (`try_fruit`), and simple v1
+// decay (`decay_mushrooms`).
+
+/// A mushroom being revealed cell-by-cell. Shape fields set at fruiting time (`try_fruit`).
+#[derive(Clone, Copy)]
+pub struct GrowingMushroom {
+    pub x: usize,
+    pub base_y: usize,
+    pub height: u8,
+    pub cap_r: u8,
+    pub progress: u16,
+    /// Per-mushroom seed (drawn from the sim RNG at fruiting time) driving the stem's gentle
+    /// horizontal wander -- see `stem_dx`. Keeps each mushroom's sway deterministic but distinct.
+    pub sway_seed: u32,
+}
+
+/// A fully-grown mushroom counting down to decay. Stores the same shape fields as
+/// `GrowingMushroom` so its footprint can be recomputed via `mushroom_footprint` once it's time
+/// to crumble -- no need to remember every cell up front.
+#[derive(Clone, Copy)]
+pub struct DecayingMushroom {
+    pub x: usize,
+    pub base_y: usize,
+    pub height: u8,
+    pub cap_r: u8,
+    pub sway_seed: u32,
+    pub ticks_left: u32,
+}
+
+impl World {
+    pub fn mushroom_len(&self) -> usize {
+        self.mushrooms.len()
+    }
+
+    /// Reveal more of each growing mushroom this tick; retire finished ones into
+    /// `decaying_mushrooms` so they eventually crumble away. Driven from `grow_mycelium`'s
+    /// cadence, which is the sole owner of this call now that the old dormant grow() is gone.
+    pub fn grow_mushrooms(&mut self) {
+        let reveal = self.params.values[crate::params::P_MUSH_REVEAL] as u16;
+        let mut i = 0;
+        while i < self.mushrooms.len() {
+            let done = self.reveal_mushroom(i, reveal);
+            if done {
+                let m = self.mushrooms[i];
+                let lifespan = (self.params.values[crate::params::P_MUSH_LIFESPAN] as u32).max(1);
+                self.decaying_mushrooms.push(DecayingMushroom {
+                    x: m.x,
+                    base_y: m.base_y,
+                    height: m.height,
+                    cap_r: m.cap_r,
+                    sway_seed: m.sway_seed,
+                    ticks_left: lifespan,
+                });
+                self.mushrooms.swap_remove(i);
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    /// Age completed mushrooms toward decay; once a mushroom's lifespan runs out its flesh
+    /// crumbles cell-by-cell to Ash (P_ASH_CHANCE) or Empty, same product mix as burnt-out
+    /// mycelium/flesh. Bounded list that drains to empty once nothing is decaying, so it stays
+    /// chunk-sleep safe (no per-frame scan; only ever as big as the completed-mushroom count).
+    pub fn decay_mushrooms(&mut self) {
+        let mut i = 0;
+        while i < self.decaying_mushrooms.len() {
+            if self.decaying_mushrooms[i].ticks_left > 0 {
+                self.decaying_mushrooms[i].ticks_left -= 1;
+                i += 1;
+                continue;
+            }
+            let m = self.decaying_mushrooms[i];
+            let footprint = mushroom_footprint(m.x as i32, m.base_y as i32, m.height, m.cap_r, m.sway_seed);
+            for (cx, cy) in footprint {
+                if !self.in_bounds(cx as isize, cy as isize) {
+                    continue;
+                }
+                if self.material_at(cx as isize, cy as isize) != Material::MushroomFlesh {
+                    continue; // already carved away, burned, etc.
+                }
+                let (ux, uy) = (cx as usize, cy as usize);
+                let product = if self.chance(self.params.values[crate::params::P_ASH_CHANCE]) {
+                    Material::Ash
+                } else {
+                    Material::Empty
+                };
+                let shade = (self.next_rand() & 3) as u8;
+                let idx = self.idx(ux, uy);
+                self.cells[idx] = Cell::new(product, shade);
+                self.wake(ux, uy);
+            }
+            self.decaying_mushrooms.swap_remove(i);
+        }
+    }
+
+    /// Reveal up to `n` cells of mushroom `i`. Returns true when fully grown.
+    /// Layout: cells [0, height) are the stem column going up from base_y-1;
+    /// cells [height, height + cap_area) are the cap dome around the stem top.
+    fn reveal_mushroom(&mut self, i: usize, n: u16) -> bool {
+        let m = self.mushrooms[i];
+        // Same geometry the fruiting-time fit-check uses (see `mushroom_footprint`), so what
+        // gets drawn here always matches what was verified clear before this mushroom spawned.
+        let footprint = mushroom_footprint(m.x as i32, m.base_y as i32, m.height, m.cap_r, m.sway_seed);
+        let total = footprint.len() as u16;
+
+        let mut revealed = 0;
+        while revealed < n && m.progress + revealed < total {
+            let p = m.progress + revealed;
+            let (cx, cy) = footprint[p as usize];
+            if self.in_bounds(cx as isize, cy as isize) {
+                let cur = self.material_at(cx as isize, cy as isize);
+                // Only ever occupy Empty space -- growing into Soil (or anything else solid)
+                // would let the mushroom carve straight through the ground. Skipped cells still
+                // advance `progress` below, so the mushroom still completes/retires normally.
+                if cur == Material::Empty {
+                    let idx = self.idx(cx as usize, cy as usize);
+                    self.cells[idx].material = Material::MushroomFlesh as u8;
+                    self.cells[idx].aux = 0;
+                    self.wake(cx as usize, cy as usize);
+                }
+            }
+            revealed += 1;
+        }
+        self.mushrooms[i].progress += revealed;
+        self.mushrooms[i].progress >= total
+    }
+
+    /// Whether there's enough empty headroom above (x, y) for a mushroom to occupy: the cell
+    /// directly above must be Empty, and so must a few more cells of vertical clearance above
+    /// that. Without this, mycelium buried inside soil/sand could fruit and immediately try to
+    /// grow its stem through solid ground.
+    pub(crate) fn has_fruiting_room(&self, x: usize, y: usize) -> bool {
+        let xi = x as isize;
+        for dy in 1..=4i32 {
+            if self.material_at(xi, y as isize - dy as isize) != Material::Empty {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Roll a parametric mushroom shape and, if its whole footprint has room to grow, enqueue
+    /// it. Returns false (and spawns nothing) if any in-bounds footprint cell is already
+    /// occupied -- by another mushroom, terrain, or anything else non-Empty -- which is what
+    /// used to let adjacent mushrooms interleave/merge (Fix A, M1c).
+    pub fn try_fruit(&mut self, x: usize, y: usize) -> bool {
+        let hmin = self.params.values[crate::params::P_MUSH_HEIGHT_MIN] as i32;
+        let hmax = self.params.values[crate::params::P_MUSH_HEIGHT_MAX] as i32;
+        let cmin = self.params.values[crate::params::P_MUSH_CAP_MIN] as i32;
+        let cmax = self.params.values[crate::params::P_MUSH_CAP_MAX] as i32;
+        let height = self.rand_range(hmin, hmax) as u8;
+        let cap_r = self.rand_range(cmin, cmax) as u8;
+        let sway_seed = self.next_rand();
+
+        let footprint = mushroom_footprint(x as i32, y as i32, height, cap_r, sway_seed);
+        let clear = footprint.iter().all(|&(cx, cy)| {
+            !self.in_bounds(cx as isize, cy as isize)
+                || self.material_at(cx as isize, cy as isize) == Material::Empty
+        });
+        if !clear {
+            return false;
+        }
+
+        self.mushrooms.push(GrowingMushroom { x, base_y: y, height, cap_r, progress: 0, sway_seed });
+        true
+    }
+
+    /// Inclusive random integer in [lo, hi] using the sim RNG. lo<=hi assumed; falls back to lo.
+    pub(crate) fn rand_range(&mut self, lo: i32, hi: i32) -> i32 {
+        if hi <= lo {
+            return lo;
+        }
+        lo + (self.next_rand() as i32).rem_euclid(hi - lo + 1)
+    }
+}
+
+/// All absolute (x, y) cells a mushroom with this shape occupies: the stem column (bottom-up,
+/// wandering per `stem_dx`) followed by the cap dome (per `cap_dome`, already bottom-up) atop
+/// the stem's ACTUAL wandered top. This is the single source of truth for a mushroom's
+/// footprint -- used both to check the whole shape is clear before fruiting (`try_fruit`) and
+/// to reveal it cell-by-cell as it grows (`reveal_mushroom`), so the two can never disagree.
+fn mushroom_footprint(x: i32, base_y: i32, height: u8, cap_r: u8, sway_seed: u32) -> Vec<(i32, i32)> {
+    let stem = height as u16;
+    let r = cap_r as i32;
+    let cap_top_y = base_y - height as i32; // stem top; the dome's widest row
+    let stem_top_x = x + stem_dx(sway_seed, stem.saturating_sub(1));
+    let cap_cells = cap_dome(r);
+
+    let mut cells = Vec::with_capacity(stem as usize + cap_cells.len());
+    for p in 0..stem {
+        // bottom-up, gently wandering left/right as it rises (never more than 1 cell between
+        // consecutive heights, so it stays visually connected)
+        cells.push((x + stem_dx(sway_seed, p), base_y - 1 - p as i32));
+    }
+    for (dx, dy) in cap_cells {
+        cells.push((stem_top_x + dx, cap_top_y + dy));
+    }
+    cells
+}
+
+/// Deterministic, bounded horizontal wander for a mushroom stem, seeded per-mushroom so stems
+/// aren't perfectly straight. Amplitude is 1 or 2 cells (picked from the seed) and the path is
+/// a triangle wave: consecutive heights (`p` and `p+1`) always differ by exactly 0 or 1 cell,
+/// so the stem never gaps -- it stays visually connected as it wanders.
+fn stem_dx(seed: u32, p: u16) -> i32 {
+    let amp = 1 + (seed % 2) as i32; // amplitude: 1 or 2 cells
+    let period = 4 * amp; // full up-down-up cycle of a unit-slope triangle wave
+    let shift = (seed / 2) % period as u32; // per-seed phase offset
+    let phase = ((p as u32 + shift) % period as u32) as i32;
+    if phase <= amp {
+        phase
+    } else if phase <= 3 * amp {
+        2 * amp - phase
+    } else {
+        phase - 4 * amp
+    }
+}
+
+/// Upper-hemisphere dome of radius r as (dx, dy) offsets, deterministic order (row-major
+/// bottom-up). dy runs from 0 (the widest row, flush against the stem top) to -r (the apex),
+/// so the dome reveals grounded-first: the widest row fills in before the rows curving up
+/// above it, instead of the apex appearing to float in open air before the rest connects.
+fn cap_dome(r: i32) -> Vec<(i32, i32)> {
+    let mut cells = Vec::new();
+    for dy in (-r..=0).rev() {
+        for dx in -r..=r {
+            if dx * dx + dy * dy <= r * r {
+                cells.push((dx, dy));
+            }
+        }
+    }
+    cells
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cap_dome;
+
+    #[test]
+    fn cap_reveals_from_bottom_up() {
+        // Regression: cap_dome used to order dy from -r (apex) to 0 (widest row), so the very
+        // first cells revealed were the apex, floating above the stem top before the rest of
+        // the dome filled in. The dome must reveal bottom-up (grounded on the stem top first).
+        let r = 5;
+        let cells = cap_dome(r);
+        assert!(!cells.is_empty());
+        let first = cells.first().unwrap();
+        let last = cells.last().unwrap();
+        assert_eq!(first.1, 0, "first cap cell revealed should be on the widest row (dy == 0), atop the stem");
+        assert_eq!(last.1, -r, "last cap cell revealed should be the apex (dy == -r)");
     }
 }

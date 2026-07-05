@@ -1,7 +1,6 @@
 use crate::avatar::Avatar;
 use crate::cell::{Cell, Material, FLAG_BURNING};
-use crate::growth::{DecayingMushroom, FrontierCell, GrowingMushroom};
-use crate::mycelium::{Colony, Tip};
+use crate::mycelium::{Colony, DecayingMushroom, GrowingMushroom, Tip};
 use crate::params::{
     Params, P_ACID_BLOB_RADIUS, P_ACID_ETCH, P_ACID_ETCH_ROCK, P_ASH_CHANCE, P_FIRE_FLICKER,
     P_FIRE_LIFETIME, P_GUNFIRE_SPORE_CHANCE, P_INCENDIARY_RADIUS, P_KINETIC_EJECTA,
@@ -41,20 +40,12 @@ pub struct World {
     pub(crate) particles: Vec<Particle>,
     pub(crate) projectiles: Vec<Projectile>,
     pub(crate) avatar: Option<Avatar>,
-    pub(crate) frontier: Vec<FrontierCell>,
     pub(crate) mushrooms: Vec<GrowingMushroom>,
-    /// Completed mushrooms counting down to decay (M1e task 4 v1 decay); bounded by how many
-    /// mushrooms have ever finished growing and not yet crumbled.
+    /// Completed mushrooms counting down to decay; bounded by how many mushrooms have ever
+    /// finished growing and not yet crumbled.
     pub(crate) decaying_mushrooms: Vec<DecayingMushroom>,
-    pub(crate) grow_countdown: u32,
-    /// Cadence gate for grow_mycelium(), mirroring grow_countdown for old growth (P_MY_GROWTH_INTERVAL).
+    /// Cadence gate for grow_mycelium() (P_MY_GROWTH_INTERVAL) -- the sole growth model.
     pub(crate) my_grow_countdown: u32,
-    /// Completed mushroom caps that periodically puff spores: (x, y, puff_countdown, remaining_puffs).
-    /// Finite (remaining_puffs starts at 3) so the world can eventually sleep once caps are spent.
-    pub(crate) caps: Vec<(usize, usize, u32, u8)>,
-    /// Frontier cells dropped because the frontier was already at P_MAX_FRONTIER when a new
-    /// cell would have been enqueued. Surfaced instead of silently truncating (Task 7 review).
-    pub(crate) frontier_drops: u64,
     /// M1e living-mycelium organism model: colonies and their growing tips.
     pub(crate) colonies: Vec<Colony>,
     pub(crate) tips: Vec<Tip>,
@@ -81,13 +72,9 @@ impl World {
             particles: Vec::new(),
             projectiles: Vec::new(),
             avatar: None,
-            frontier: Vec::new(),
             mushrooms: Vec::new(),
             decaying_mushrooms: Vec::new(),
-            grow_countdown: 0,
             my_grow_countdown: 0,
-            caps: Vec::new(),
-            frontier_drops: 0,
             colonies: Vec::new(),
             tips: Vec::new(),
         }
@@ -118,18 +105,14 @@ impl World {
     }
 
     /// Reset every cell to Empty and clear movement stamps (used by worldgen). Also resets
-    /// in-flight growth state (frontier/mushrooms/caps/cadence) so a regenerated world doesn't
-    /// carry growth records that point at terrain positions from the world it replaced.
+    /// in-flight growth state (mushrooms/decay/cadence/colonies/tips) so a regenerated world
+    /// doesn't carry growth records that point at terrain positions from the world it replaced.
     pub fn clear(&mut self) {
         self.cells.fill(Cell::default());
         self.stamp.fill(0);
-        self.frontier.clear();
         self.mushrooms.clear();
         self.decaying_mushrooms.clear();
-        self.caps.clear();
-        self.grow_countdown = 0;
         self.my_grow_countdown = 0;
-        self.frontier_drops = 0;
         self.colonies.clear();
         self.tips.clear();
     }
@@ -208,8 +191,8 @@ impl World {
                 self.wake(x as usize, y as usize);
             }
         }
-        // M1e: painted Mycelium no longer joins the old frontier model (dormant). Colony/tip
-        // behavior for painted mycelium is handled by the new organism model (Task 6).
+        // Painted Mycelium is inert terrain -- it only becomes a living, growing organism if a
+        // colony's tip later happens to reach it, or via spawn_colony (see Ammo::Spore below).
     }
 
     pub fn spawn_avatar(&mut self, x: f32, y: f32) {
@@ -358,14 +341,8 @@ impl World {
                 }
             }
         }
-        // Budgeted growth on the P_GROWTH_INTERVAL cadence (chunk-sleep safe: grow() no-ops when idle).
-        if self.grow_countdown == 0 {
-            self.grow();
-            self.grow_countdown = (self.params.values[crate::params::P_GROWTH_INTERVAL] as u32).max(1);
-        }
-        self.grow_countdown -= 1;
-        // Budgeted mycelium growth on the P_MY_GROWTH_INTERVAL cadence (chunk-sleep safe:
-        // grow_mycelium() no-ops when there are no live tips).
+        // Budgeted mycelium growth on the P_MY_GROWTH_INTERVAL cadence -- the sole growth model
+        // (chunk-sleep safe: grow_mycelium() no-ops when there's nothing live to grow/decay).
         if self.my_grow_countdown == 0 {
             self.grow_mycelium();
             self.my_grow_countdown = (self.params.values[crate::params::P_MY_GROWTH_INTERVAL] as u32).max(1);
@@ -464,9 +441,11 @@ impl World {
                 self.inject_blob(cx, cy, r, Material::Acid);
             }
             Ammo::Spore => {
+                // Spore ammo is "the builder": it plants a living colony at the impact point
+                // (spawn_colony lays the origin mycelium cell + one tip regardless of what was
+                // there before), rather than just painting inert mycelium.
                 let r = self.params.values[P_SPORE_BLOB_RADIUS] as isize;
-                self.inject_blob(cx, cy, r, Material::Mycelium);
-                self.seed_frontier_around(cx, cy, r); // planted mycelium must join the frontier to be alive
+                self.spawn_colony(cx as usize, cy as usize);
                 self.inject_blob(cx, cy - r, (r / 2).max(1), Material::SporeGas); // a puff above
             }
         }
@@ -665,14 +644,7 @@ impl World {
             }
             m if m.is_gas() => {
                 self.cells_processed += 1;
-                // M1c: a spore resting against soil may seed a new colony. If it does, the
-                // spore cell is consumed (set to Empty) and there's nothing left to move
-                // this frame — skip update_gas so it doesn't dispatch on the stale material.
-                if mat == Material::SporeGas && self.try_reseed(x, y) {
-                    // spore consumed into a mycelium seed; nothing left to move this frame
-                } else {
-                    self.update_gas(x, y, m);
-                }
+                self.update_gas(x, y, m);
             }
             m if m.is_powder() => {
                 self.cells_processed += 1;
