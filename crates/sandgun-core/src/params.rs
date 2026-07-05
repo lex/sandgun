@@ -38,7 +38,18 @@ pub const P_PUFF_SPORES: usize = 33;     // spore cells per puff
 pub const P_RESEED_CHANCE: usize = 34;   // 0..1 a spore adjacent to soil seeds a colony
 pub const P_GUNFIRE_SPORE_CHANCE: usize = 35; // 0..1 a carved flesh cell releases spore gas
 pub const P_ASH_CHANCE: usize = 36; // 0..1 chance burnt-out Mycelium/MushroomFlesh leaves Ash (else Empty)
-pub const P_COUNT: usize = 37;
+// --- M1e living mycelium (new organism model; old frontier params above stay until Task 6) ---
+pub const P_MY_GROWTH_INTERVAL: usize = 37; // frames between mycelium growth ticks
+pub const P_MY_TIP_CAP: usize = 38;         // max live tips per colony
+pub const P_MY_EAT: usize = 39;             // richness->pool multiplier when a tip eats soil
+pub const P_MY_FRUIT_THRESHOLD: usize = 40; // nutrient pool needed to fruit
+pub const P_MY_FRUIT_COST: usize = 41;      // pool spent per fruiting event
+pub const P_MY_DIEBACK: usize = 42;         // dieback rate
+pub const P_MY_BRANCH_CHANCE: usize = 43;   // 0..1 periodic branch chance per tip
+pub const P_MY_WORLDGEN_COLONIES: usize = 44; // number of colony origins seeded at worldgen
+pub const P_SOIL_RICHNESS_MIN: usize = 45;  // worldgen baseline soil richness (aux) lower bound
+pub const P_SOIL_RICHNESS_MAX: usize = 46;  // worldgen baseline soil richness (aux) upper bound
+pub const P_COUNT: usize = 47;
 
 /// Hot-tunable sim parameters. Index constants are mirrored in web/src/params.js — keep in sync.
 pub struct Params {
@@ -85,6 +96,16 @@ impl Default for Params {
         v[P_RESEED_CHANCE] = 0.10;
         v[P_GUNFIRE_SPORE_CHANCE] = 0.5;
         v[P_ASH_CHANCE] = 0.25;
+        v[P_MY_GROWTH_INTERVAL] = 3.0;
+        v[P_MY_TIP_CAP] = 12.0;
+        v[P_MY_EAT] = 1.0;
+        v[P_MY_FRUIT_THRESHOLD] = 400.0;
+        v[P_MY_FRUIT_COST] = 350.0;
+        v[P_MY_DIEBACK] = 1.0;
+        v[P_MY_BRANCH_CHANCE] = 0.04;
+        v[P_MY_WORLDGEN_COLONIES] = 6.0;
+        v[P_SOIL_RICHNESS_MIN] = 40.0;
+        v[P_SOIL_RICHNESS_MAX] = 120.0;
         Params { values: v }
     }
 }

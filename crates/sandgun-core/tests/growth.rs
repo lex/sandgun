@@ -961,61 +961,13 @@ fn spore_ammo_plants_living_mycelium() {
     assert!(after > before, "planted mycelium should actually spread ({before} -> {after})");
 }
 
-#[test]
-fn painted_mycelium_grows() {
-    // Regression: World::paint just set cells directly, so painted Mycelium never joined the
-    // growth frontier -- unlike worldgen/colonized/bridged/reseeded/spore-ammo mycelium, it
-    // stayed a permanently inert blob (same class of bug as the spore-ammo case already fixed
-    // via seed_frontier_around).
-    let mut w = soil_world();
-    w.paint(64, 90, 3, Material::Mycelium as u8); // paint a blob of mycelium into the soil band
-    assert!(w.frontier_len() > 0, "painting mycelium should seed it into the growth frontier");
-
-    let before = mycelium_count(&w);
-    for _ in 0..300 {
-        w.step();
-    }
-    let after = mycelium_count(&w);
-    assert!(after > before, "painted mycelium should actually spread ({before} -> {after})");
-}
-
-#[test]
-fn painted_mycelium_on_soil_grows() {
-    // Painted mycelium adjacent to Soil must join the growth frontier and spread, same as
-    // worldgen/colonized/bridged/reseeded/spore-ammo mycelium.
-    let mut w = soil_world();
-    w.paint(64, 90, 0, Material::Mycelium as u8); // paint a single seed into the soil band
-    assert!(w.frontier_len() > 0, "painted mycelium next to soil should join the growth frontier");
-
-    let before = mycelium_count(&w);
-    for _ in 0..300 {
-        w.step();
-    }
-    let after = mycelium_count(&w);
-    assert!(after > before, "painted mycelium on soil should spread ({before} -> {after})");
-}
-
-#[test]
-fn painted_mycelium_in_open_bridges() {
-    // Regression: seed_frontier_around (called by World::paint for Mycelium) only enqueued a
-    // painted cell via has_colonizable_neighbor (Soil-only neighbors). Mycelium painted where
-    // its only neighbors are Empty (open air) never entered the frontier and stayed a
-    // permanently inert blob, unlike normal colonization which can bridge into empty space.
-    let mut w = World::new(64, 64);
-    // A mycelium blob painted entirely in open air: no Soil, no pre-existing mycelium nearby.
-    w.paint(32, 32, 2, Material::Mycelium as u8);
-    assert!(
-        w.frontier_len() > 0,
-        "painted mycelium with only empty neighbors should still join the frontier (bridging)"
-    );
-
-    let before = mycelium_count(&w);
-    for _ in 0..300 {
-        w.step();
-    }
-    let after = mycelium_count(&w);
-    assert!(after > before, "painted mycelium in open air should bridge and spread a little ({before} -> {after})");
-}
+// M1e (task 1): World::paint no longer seeds painted Mycelium into the old growth frontier --
+// the old frontier/colonize model is dormant by design so it doesn't fight the new colony/tip
+// organism model (see mycelium.rs, world.rs::paint). painted_mycelium_grows,
+// painted_mycelium_on_soil_grows and painted_mycelium_in_open_bridges asserted exactly the
+// seed_frontier_around behavior that this task intentionally removes; they're deleted here
+// rather than left red. Painted-mycelium growth is redefined on top of colonies in a later
+// M1e task.
 
 #[test]
 fn mushroom_stems_vary_and_stay_connected() {

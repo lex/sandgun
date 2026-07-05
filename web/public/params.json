@@ -35,5 +35,15 @@
   "puff_spores": 5,
   "reseed_chance": 0.1,
   "gunfire_spore_chance": 0.5,
-  "ash_chance": 0.25
+  "ash_chance": 0.25,
+  "my_growth_interval": 3,
+  "my_tip_cap": 12,
+  "my_eat": 1.0,
+  "my_fruit_threshold": 400,
+  "my_fruit_cost": 350,
+  "my_dieback": 1,
+  "my_branch_chance": 0.04,
+  "my_worldgen_colonies": 6,
+  "soil_richness_min": 40,
+  "soil_richness_max": 120
 }

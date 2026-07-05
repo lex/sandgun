@@ -241,8 +241,17 @@ pub fn generate(world: &mut World, seed: u32) {
     // 5. everything settles alive
     world.wake_all();
 
-    // 6. the mycelium veins seeded above are already living growth — put them on the
-    // frontier so a freshly generated world starts creeping/fruiting on load instead of
-    // sitting inert until something else calls seed_frontier().
-    world.seed_frontier();
+    // 6. M1e: bake substrate richness into every Soil cell's aux so mycelium tips have
+    // something to eat once the new organism model starts growing (Task 2+). The old
+    // frontier/colonize model is dormant — worldgen no longer calls seed_frontier().
+    let richness_min = world.params.values[crate::params::P_SOIL_RICHNESS_MIN] as i32;
+    let richness_max = world.params.values[crate::params::P_SOIL_RICHNESS_MAX] as i32;
+    for x in 0..w {
+        for yy in 0..h {
+            if world.get(x, yy) == Material::Soil {
+                let richness = rng.range(richness_min, richness_max + 1).clamp(0, 255) as u8;
+                world.set_soil_richness(x, yy, richness);
+            }
+        }
+    }
 }

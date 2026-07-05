@@ -1,6 +1,7 @@
 use crate::avatar::Avatar;
 use crate::cell::{Cell, Material, FLAG_BURNING};
 use crate::growth::{FrontierCell, GrowingMushroom};
+use crate::mycelium::{Colony, Tip};
 use crate::params::{
     Params, P_ACID_BLOB_RADIUS, P_ACID_ETCH, P_ACID_ETCH_ROCK, P_ASH_CHANCE, P_FIRE_FLICKER,
     P_FIRE_LIFETIME, P_GUNFIRE_SPORE_CHANCE, P_INCENDIARY_RADIUS, P_KINETIC_EJECTA,
@@ -49,6 +50,9 @@ pub struct World {
     /// Frontier cells dropped because the frontier was already at P_MAX_FRONTIER when a new
     /// cell would have been enqueued. Surfaced instead of silently truncating (Task 7 review).
     pub(crate) frontier_drops: u64,
+    /// M1e living-mycelium organism model: colonies and their growing tips.
+    pub(crate) colonies: Vec<Colony>,
+    pub(crate) tips: Vec<Tip>,
 }
 
 impl World {
@@ -77,6 +81,8 @@ impl World {
             grow_countdown: 0,
             caps: Vec::new(),
             frontier_drops: 0,
+            colonies: Vec::new(),
+            tips: Vec::new(),
         }
     }
 
@@ -115,6 +121,8 @@ impl World {
         self.caps.clear();
         self.grow_countdown = 0;
         self.frontier_drops = 0;
+        self.colonies.clear();
+        self.tips.clear();
     }
 
     /// Wake every chunk for the next step (used after worldgen).
@@ -191,12 +199,8 @@ impl World {
                 self.wake(x as usize, y as usize);
             }
         }
-        if Material::from_u8(material) == Material::Mycelium {
-            // Painted mycelium must join the growth frontier the same way worldgen/colonized/
-            // bridged/reseeded/spore-ammo mycelium does, or it stays a permanently inert blob
-            // that never spreads, ages, or fruits.
-            self.seed_frontier_around(cx as isize, cy as isize, radius as isize);
-        }
+        // M1e: painted Mycelium no longer joins the old frontier model (dormant). Colony/tip
+        // behavior for painted mycelium is handled by the new organism model (Task 6).
     }
 
     pub fn spawn_avatar(&mut self, x: f32, y: f32) {
@@ -351,6 +355,7 @@ impl World {
             self.grow_countdown = (self.params.values[crate::params::P_GROWTH_INTERVAL] as u32).max(1);
         }
         self.grow_countdown -= 1;
+        self.grow_mycelium();
         self.update_projectiles();
         self.update_particles();
         self.update_avatar();
