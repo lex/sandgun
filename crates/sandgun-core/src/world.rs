@@ -55,6 +55,18 @@ pub struct World {
     pub(crate) tips: Vec<Tip>,
     /// Ids freed by reaped colonies (LIFO), recycled by `alloc_colony_id` before minting a new one.
     pub(crate) free_colony_ids: Vec<u8>,
+    /// Sites (x, y, search_radius) queued this step where a Mycelium/MushroomFlesh (or its
+    /// anchoring Soil) cell was just removed -- burnout, acid dissolve, or a kinetic/acid ammo
+    /// impact. Drained once per step by `drop_unsupported_pending()` instead of each site flooding
+    /// inline, so overlapping removals from a single big burn/acid event share one coalesced,
+    /// deduped support check (M1e cleanup task 3). The radius travels with the site (rather than
+    /// a single step-wide constant) because carve_crater/inject_blob need a search radius scaled
+    /// to the blast (crater/blob radius + 2), while the per-cell sweep sites (burnout, acid
+    /// dissolve) only ever need the small fixed radius that removing one cell warrants; sharing
+    /// one global radius across a step would either under-search the big-blast sites (missing the
+    /// surviving edge of a large crater -- wrong) or over-search the small sweep sites (harmless
+    /// but wasteful), so each entry keeps the radius its own removal actually needs.
+    pub(crate) pending_drop_checks: Vec<(isize, isize, isize)>,
 }
 
 impl World {
@@ -84,6 +96,7 @@ impl World {
             colonies: Vec::new(),
             tips: Vec::new(),
             free_colony_ids: Vec::new(),
+            pending_drop_checks: Vec::new(),
         }
     }
 
@@ -123,6 +136,7 @@ impl World {
         self.colonies.clear();
         self.tips.clear();
         self.free_colony_ids.clear();
+        self.pending_drop_checks.clear();
     }
 
     /// Wake every chunk for the next step (used after worldgen).
@@ -366,7 +380,12 @@ impl World {
             self.my_grow_countdown = (self.params.values[crate::params::P_MY_GROWTH_INTERVAL] as u32).max(1);
         }
         self.my_grow_countdown = self.my_grow_countdown.saturating_sub(1);
-        self.update_projectiles();
+        self.update_projectiles(); // carve_crater/inject_blob (ammo impacts) enqueue drop checks here
+        // Task 3 (M1e cleanup): one coalesced, deduped support-check pass per step, after every
+        // site that can enqueue one this frame has run (the cell sweep's burnout/acid-dissolve
+        // above, and ammo impacts via update_projectiles just above). No-ops when nothing was
+        // queued, so it costs nothing on a settled/sleeping world (chunk-sleep safe).
+        self.drop_unsupported_pending();
         self.update_particles();
         self.update_avatar();
     }
@@ -557,7 +576,10 @@ impl World {
         // Task 5: cells just carved away may have been the only link some Mycelium/MushroomFlesh
         // nearby had to an anchor. Check a bit past the crater's own radius so the flood's seed
         // search reaches the surviving cells right at the edge of what was just removed.
-        self.drop_unsupported_around(cx, cy, radius + 2);
+        // Task 3 (M1e cleanup): enqueue rather than flood inline -- drop_unsupported_pending()
+        // runs once after update_projectiles() later this same step, so the outcome (and its
+        // single-step timing, per the tests) is unchanged; only the raw call is deferred/deduped.
+        self.pending_drop_checks.push((cx, cy, radius + 2));
     }
 
     fn ignite_blast(&mut self, cx: isize, cy: isize, radius: isize) {
@@ -635,8 +657,9 @@ impl World {
         // Task 5 (M1e final review): a blob (Acid ammo) can overwrite Mycelium/MushroomFlesh just
         // like carve_crater carves it away -- run the same support check, same radius convention
         // (blob radius + 2 so the flood's seed search reaches the surviving cells at the edge).
+        // Task 3 (M1e cleanup): enqueue rather than flood inline; see carve_crater's comment.
         if overwrote_mycelium_or_flesh {
-            self.drop_unsupported_around(cx, cy, radius + 2);
+            self.pending_drop_checks.push((cx, cy, radius + 2));
         }
     }
 
@@ -875,8 +898,12 @@ impl World {
             // Task 5: a Mycelium/MushroomFlesh cell just burned away -- its neighbors may have
             // lost their only link to an anchor. Radius is small (a single cell was removed);
             // it only needs to reach the 8 surrounding cells to seed the flood.
+            // Task 3 (M1e cleanup): this fires once per burned cell during the sweep, so a big
+            // fire eating a big mycelium mass would otherwise re-flood overlapping regions many
+            // times a frame -- enqueue instead and let drop_unsupported_pending() coalesce all of
+            // this step's removals (burn + acid + ammo) into one deduped pass after the sweep.
             if matches!(mat, Material::Mycelium | Material::MushroomFlesh) {
-                self.drop_unsupported_around(x as isize, y as isize, 2);
+                self.pending_drop_checks.push((x as isize, y as isize, 2));
             }
             return;
         }
@@ -1000,8 +1027,11 @@ impl World {
                 // or a Soil cell that was anchoring nearby mycelium, can strand a connected mass
                 // just like a burned-away cell does -- same check, same small radius since only
                 // one cell was removed.
+                // Task 3 (M1e cleanup): enqueue rather than flood inline; see update_burning's
+                // comment -- a big acid pool dissolves many cells per frame, so this must not
+                // flood inline per cell.
                 if matches!(target, Material::Mycelium | Material::MushroomFlesh | Material::Soil) {
-                    self.drop_unsupported_around(nx, ny, 2);
+                    self.pending_drop_checks.push((nx, ny, 2));
                 }
                 let i = self.idx(x, y);
                 if self.cells[i].aux <= 1 {

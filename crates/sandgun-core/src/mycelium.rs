@@ -521,6 +521,38 @@ impl World {
     /// anything mid-flight that would keep the world awake once the dropped cells' particles land.
     pub fn drop_unsupported_around(&mut self, cx: isize, cy: isize, radius: isize) {
         let mut visited: HashSet<(isize, isize)> = HashSet::new();
+        self.seed_drop_scan(cx, cy, radius, &mut visited);
+    }
+
+    /// Batched, deduped counterpart to `drop_unsupported_around` (M1e cleanup task 3). Every site
+    /// that removed a Mycelium/MushroomFlesh (or its anchoring Soil) cell this step -- burnout,
+    /// acid dissolve, or a kinetic/acid ammo impact -- pushed `(x, y, radius)` onto
+    /// `pending_drop_checks` instead of flooding inline. This drains that list once, sharing ONE
+    /// `visited` set across every entry, so overlapping removal sites (a big fire or acid pool
+    /// eating a large mycelium mass triggers this once per cell) check each connected group at
+    /// most once per step instead of re-flooding the same territory repeatedly.
+    ///
+    /// No-ops when nothing was queued (leaves `visited` unallocated) so a settled/sleeping world
+    /// does zero work here, same as `drop_unsupported_around`'s existing chunk-sleep-safe budget.
+    /// Determinism: `visited` is membership-only (never iterated), and the drop order follows the
+    /// fixed push order of `pending_drop_checks` plus each flood's own deterministic queue order.
+    pub fn drop_unsupported_pending(&mut self) {
+        if self.pending_drop_checks.is_empty() {
+            return;
+        }
+        let pending = std::mem::take(&mut self.pending_drop_checks);
+        let mut visited: HashSet<(isize, isize)> = HashSet::new();
+        for (cx, cy, radius) in pending {
+            self.seed_drop_scan(cx, cy, radius, &mut visited);
+        }
+    }
+
+    /// Shared seed-search core of `drop_unsupported_around`/`drop_unsupported_pending`: scans the
+    /// `radius`-square around (cx, cy) for Mycelium/MushroomFlesh cells not already in `visited`
+    /// and floods each one found (`flood_group_and_maybe_drop`), which extends `visited` with
+    /// every cell of that connected group so later seeds (from this call or, when `visited` is
+    /// shared across a whole pending batch, from a different queued site) never reprocess it.
+    fn seed_drop_scan(&mut self, cx: isize, cy: isize, radius: isize, visited: &mut HashSet<(isize, isize)>) {
         for dy in -radius..=radius {
             for dx in -radius..=radius {
                 let (x, y) = (cx + dx, cy + dy);
@@ -529,7 +561,7 @@ impl World {
                 }
                 let m = self.material_at(x, y);
                 if m == Material::Mycelium || m == Material::MushroomFlesh {
-                    self.flood_group_and_maybe_drop(x, y, &mut visited);
+                    self.flood_group_and_maybe_drop(x, y, visited);
                 }
             }
         }

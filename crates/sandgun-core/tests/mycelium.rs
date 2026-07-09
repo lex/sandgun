@@ -671,6 +671,71 @@ fn settle_after_drop() {
     assert_eq!(w.cells_processed, 0, "world should settle again once the drop resolves");
 }
 
+// --- Task 3 (M1e cleanup): coalesced/deduped support-check pass -- world.rs's
+// pending_drop_checks + drop_unsupported_pending() replace the old per-removal-site inline
+// drop_unsupported_around() calls (still called from acid dissolve, burnout, carve_crater,
+// inject_blob -- now all via the pending queue instead) with ONE pass sharing a single `visited`
+// set per step, so overlapping removals from the same event don't each re-flood the same
+// connected group. The tests above (severed_mycelium_bridge_falls et al.) already cover the
+// single-removal-site case unchanged; this test's job is specifically the OVERLAP case: two
+// separate removal sites landing in `pending_drop_checks` in the very same step, both reaching
+// into the SAME connected, unsupported mass.
+
+#[test]
+fn overlapping_acid_removals_flood_each_group_once() {
+    // A solid floating slab (no Rock/Soil anywhere nearby, so the whole thing is unsupported)
+    // with two acid cells embedded well inside it. P_ACID_ETCH=1.0 makes acid's dissolve roll
+    // succeed unconditionally, and every one of an embedded acid cell's 4 neighbors is Mycelium,
+    // so whichever of the 4 directions update_acid's own per-tick coin flip picks, it *will*
+    // dissolve a Mycelium neighbor on the very first tick both acid cells are processed -- i.e.
+    // deterministically, both removal sites are queued in `pending_drop_checks` in the SAME
+    // step(), and both fall within the same connected slab. That's the overlap this test needs,
+    // with no reliance on timing luck.
+    let mut w = World::new(64, 64);
+    for x in 0..64 { w.paint(x as i32, 63, 0, Material::Rock as u8); } // floor to catch debris
+    w.params.values[sandgun_core::params::P_ACID_ETCH] = 1.0;
+
+    const X0: i32 = 10;
+    const X1: i32 = 30; // inclusive
+    const Y0: i32 = 28;
+    const Y1: i32 = 32; // inclusive
+    for x in X0..=X1 {
+        for y in Y0..=Y1 {
+            w.paint(x, y, 0, Material::Mycelium as u8);
+        }
+    }
+    // Both interior (all 4 neighbors inside the slab), far enough apart that they seed two
+    // distinct search windows, yet both reach the one connected slab (a single 21x5 mass, minus
+    // two single-cell holes once dissolved, is still one 8-connected group). Note: the two acid
+    // cells themselves are left behind (spent charge, not fully consumed) sitting right where the
+    // slab used to be, so a cell or two of debris directly above one can fall one step and
+    // immediately re-settle as solid Mycelium on top of it -- that's ordinary particle/solid
+    // interaction, not a drop-check bug, so this test checks aggregate particle count and
+    // eventual settling rather than "every original cell is now empty".
+    w.paint(15, 30, 0, Material::Acid as u8);
+    w.paint(25, 30, 0, Material::Acid as u8);
+
+    let slab_cells = ((X1 - X0 + 1) * (Y1 - Y0 + 1)) as usize;
+    let particles_before = w.particle_count();
+    w.step(); // both acid dissolves + the one coalesced support-check pass, all this frame
+    // Both acid cells dissolve one neighbor each (2 cells removed with no particle -- a direct
+    // acid dissolve, like a burnout, just clears the cell) and then, since the deferred flood
+    // sees the whole slab still intact until the pass runs at the end of THIS SAME step, the rest
+    // of the connected mass (slab_cells - 2 embedded acid cells - 2 dissolved cells) drops as
+    // particles in one shot. Assert "most of the slab", not an exact count: which two interior
+    // cells acid happens to pick is randomized (bounded only to be one of the 4 Mycelium
+    // neighbors), so the exact remainder varies by at most a cell or two depending on the pick.
+    assert!(
+        w.particle_count() >= particles_before + slab_cells - 6,
+        "the whole unsupported slab should have detached into falling particles this step (got {} particles, slab had {slab_cells} cells)",
+        w.particle_count() - particles_before
+    );
+    for _ in 0..500 { w.step(); } // let debris fall/settle
+    assert_eq!(w.particle_count(), 0, "dropped debris should have landed by now");
+    w.step();
+    assert_eq!(w.cells_processed, 0, "world should settle once the coalesced drop resolves");
+}
+
 #[test]
 fn tip_on_removed_cell_dies_instead_of_regrowing_from_nothing() {
     let mut w = World::new(64, 64);
