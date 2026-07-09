@@ -432,9 +432,15 @@ impl World {
     /// cleanup): once a cell ignites, its aux becomes the fuel countdown rather than the colony
     /// id (see ignite_blast/ignite_neighbors), so a plain aux == colony_id check would treat a
     /// burning same-strand neighbor as foreign and die at it, stranding everything beyond it as
-    /// a permanent stub. Growth never lays foreign mycelium adjacent to another colony's strand,
-    /// so a burning neighbor here is overwhelmingly part of THIS strand -- and it will
-    /// self-remove via burnout regardless, so treating it as traversable costs nothing.
+    /// a permanent stub. A burning neighbor here is *usually* part of THIS strand and will
+    /// self-remove via burnout regardless, so traversing it is nearly always right and cheap.
+    /// ACCEPTED BOUNDED TRADEOFF (not an excluded case): pick_step does NOT forbid growing
+    /// adjacent to a different colony, so two concurrent colonies' strands can end up 8-adjacent.
+    /// A burning cell can't be attributed by colony (its aux is fuel), so at such a boundary a
+    /// receding walk may step onto the other colony's burning cell. This can't corrupt cell_count
+    /// (each colony released that cell at its own ignition) or break termination (the cell is
+    /// reverted to Empty, never revisited); worst case it relocates a cosmetic stub. Fully fixing
+    /// it needs per-cell colony id preserved through burning, which the 4-byte cell can't hold.
     fn adjacent_same_colony_mycelium(&self, x: usize, y: usize, colony_id: u8) -> Option<(usize, usize)> {
         const D: [(isize, isize); 8] = [(-1,-1),(0,-1),(1,-1),(-1,0),(1,0),(-1,1),(0,1),(1,1)];
         let (tx, ty) = (x as isize, y as isize);

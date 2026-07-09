@@ -311,3 +311,13 @@ Own small task; can be standalone after M1e (or slot in whenever). Not blocking.
 ## M1e carry-forwards (from final whole-branch review, 2026-07-05) — sharpened severity
 - **Colony Vec never reaped + id wraps at 255 = CUMULATIVE-ever, not concurrent.** spawn_colony id = colonies.len()+1 only grows; dead colonies stay in the Vec. Firing Spore ammo ~250+ times TOTAL over a session (not 250 alive at once) reissues ids → id-keyed lookups (colony_pool, tip_count, same-colony aux match) conflate two colonies = real correctness risk. Fix with the colony-cap/reap work (compact dead colonies, or cap concurrent colonies, or widen id). Do next after M1e merges.
 - **recede_tip aux-misread across burning transition.** adjacent_same_colony_mycelium reads Mycelium aux as colony-id, but a burning Mycelium cell's aux is a fuel countdown (aux triple-semantics collide only here, briefly). A tip receding through a strand whose adjacent segment is on fire treats the burning neighbor as foreign → may die early, stranding a cosmetic stub. Narrow window (fire+starve+recede overlap). Fix: also match a neighbor when flags&FLAG_BURNING && material==Mycelium. Same family as the tree-junction stub item.
+
+## Cross-colony recede at a burning boundary (M1e cleanup T4 review, 2026-07-09)
+recede_tip / adjacent_same_colony_mycelium treat ANY burning Mycelium neighbor as same-colony
+(a burning cell's aux is fuel, not colony id, so it can't be attributed). With multiple
+concurrent colonies (P_MY_MAX_COLONIES) whose strands grow 8-adjacent (pick_step doesn't forbid
+foreign-adjacent growth), colony A's recede can step onto colony B's burning boundary cell.
+Harmless: no cell_count corruption (each released the cell at its own ignition), no termination
+break (cell → Empty, never revisited) — worst case a relocated cosmetic stub. A full fix needs
+per-cell colony id preserved through burning, which the 4-byte cell can't hold. Accept as a
+bounded tradeoff for v1; revisit if it ever reads wrong in playtest.
