@@ -72,6 +72,16 @@ impl World {
         let Some(id) = self.alloc_colony_id() else { return 0; };
         self.colonies.push(Colony { id, nutrient_pool: 0, tip_count: 1, alive: true, age_ticks: 0, cell_count: 1 });
         let i = self.idx(x, y);
+        // Root cell overwrite: Spore ammo can land on an existing colony's live Mycelium cell,
+        // transferring that grid cell to this new colony. Same aux caveat as every other removal
+        // site -- only decrement the OLD owner if the cell was never lit (aux still its colony
+        // id, not a stale fuel countdown; a burning cell was already accounted at ignition).
+        if Material::from_u8(self.cells[i].material) == Material::Mycelium
+            && self.cells[i].flags & crate::cell::FLAG_BURNING == 0
+        {
+            let old_id = self.cells[i].aux;
+            self.colony_cell_removed(old_id);
+        }
         self.cells[i].material = Material::Mycelium as u8;
         self.cells[i].aux = id;
         self.cells[i].flags &= !crate::cell::FLAG_BURNING;
@@ -118,6 +128,11 @@ impl World {
     /// Live tip count recorded on a colony (test hook; kept in sync by grow_mycelium as tips die).
     pub fn colony_tip_count(&self, id: u8) -> u16 {
         self.colonies.iter().find(|c| c.id == id).map(|c| c.tip_count).unwrap_or(0)
+    }
+    /// Live Mycelium cells in the grid currently owned by this colony (test hook; 0 if the id
+    /// doesn't exist -- either never allocated, or already reaped).
+    pub fn colony_cell_count(&self, id: u8) -> u32 {
+        self.colonies.iter().find(|c| c.id == id).map(|c| c.cell_count).unwrap_or(0)
     }
     /// True once a colony has had its germination grace period and still has an empty pool --
     /// i.e. it's genuinely starving, not just newly spawned and yet to find its first food.

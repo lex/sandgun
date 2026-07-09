@@ -191,6 +191,16 @@ impl World {
                 if mat == Material::Fire {
                     cell.aux = self.params.values[P_FIRE_LIFETIME].clamp(0.0, 255.0) as u8;
                 }
+                // The brush is material-agnostic and unconditionally overwrites whatever was
+                // there (erase, paint over, etc.) -- same aux caveat as carve_crater/inject_blob:
+                // only decrement if this Mycelium cell was never lit (aux still the colony id,
+                // not a stale fuel countdown; a burning cell was already accounted at ignition).
+                if Material::from_u8(self.cells[i].material) == Material::Mycelium
+                    && self.cells[i].flags & FLAG_BURNING == 0
+                {
+                    let cid = self.cells[i].aux;
+                    self.colony_cell_removed(cid);
+                }
                 self.cells[i] = cell;
                 self.wake(x as usize, y as usize);
             }

@@ -1280,3 +1280,104 @@ fn full_lifecycle_world_still_sleeps_after_settling() {
     );
 }
 
+/// Box a colony's root cell in on all 8 sides with Rock, so its single tip finds nowhere to
+/// step (pick_step only ever grows into Empty/Soil) and dies on the very first growth tick,
+/// leaving exactly one real Mycelium cell (the root) in the grid.
+fn spawn_rock_boxed_colony(w: &mut World, x: usize, y: usize) -> u8 {
+    for dy in -1i32..=1 {
+        for dx in -1i32..=1 {
+            if dx == 0 && dy == 0 { continue; }
+            w.paint(x as i32 + dx, y as i32 + dy, 0, Material::Rock as u8);
+        }
+    }
+    w.spawn_colony(x, y)
+}
+
+#[test]
+fn painting_over_a_colony_cell_lets_it_reap() {
+    // M1e cleanup task 1 review: World::paint unconditionally overwrites Cell::new(...)
+    // regardless of prior contents, so erasing/painting over a live colony-owned Mycelium cell
+    // must decrement that colony's cell_count -- otherwise a boxed-in colony whose tip already
+    // died (leaving only its root cell) can never reach cell_count == 0, so it leaks: never
+    // reaped, its id never recycled.
+    let mut w = World::new(128, 128);
+    let (bx, by) = (20usize, 20usize);
+    let boxed_id = spawn_rock_boxed_colony(&mut w, bx, by);
+
+    // A second, far-away colony in rich soil that keeps at least one tip alive for a good long
+    // while. grow_mycelium's own reap sweep (the `colonies.retain` in mycelium.rs) only runs
+    // when it does real work -- it no-ops entirely once there are no live tips anywhere and no
+    // mushrooms mid-fruit/decay. Without a live tip elsewhere, the boxed colony's own tip dying
+    // (below) would be the LAST time that sweep ever ran, so painting over its root afterward
+    // would never actually get swept into a reap. This keep-alive colony is what lets later
+    // steps still perform the reap check.
+    for x in 60..120 { for y in 80..110 { w.paint(x as i32, y as i32, 0, Material::Soil as u8); w.set_soil_richness(x, y, 200); } }
+    w.spawn_colony(90, 95);
+
+    let interval = (w.params.values[sandgun_core::params::P_MY_GROWTH_INTERVAL] as usize).max(1);
+    for _ in 0..(3 * interval) { w.step(); }
+
+    // Setup check: the boxed colony's tip died leaving just its root, a real live cell -- not
+    // yet reaped.
+    assert_eq!(w.colony_tip_count(boxed_id), 0, "setup: boxed colony's tip should have died, boxed in by Rock");
+    assert_eq!(w.colony_cell_count(boxed_id), 1, "setup: only the root cell should remain");
+    assert_eq!(w.get(bx, by), Material::Mycelium, "setup: root cell should still be Mycelium");
+
+    // Erase the colony's only remaining cell with the player's brush (material-agnostic: Sand
+    // here, but the bug applies identically to Empty/erase or any other material).
+    w.paint(bx as i32, by as i32, 0, Material::Sand as u8);
+    assert_eq!(w.colony_cell_count(boxed_id), 0, "paint must decrement the overwritten colony's cell_count");
+
+    for _ in 0..(5 * interval) { w.step(); }
+
+    // The boxed colony must actually be reaped (removed from the colony list, not just
+    // "not alive") -- proven by its id being recycled by the next spawn_colony.
+    let recycled = w.spawn_colony(5, 5);
+    assert_eq!(recycled, boxed_id, "a fully cell-less, tipless colony's id must be recycled");
+}
+
+#[test]
+fn spore_onto_existing_colony_cell_transfers_ownership_cleanly() {
+    // M1e cleanup task 1 review: spawn_colony overwrites the root cell unconditionally too.
+    // Firing Spore ammo (which calls spawn_colony) onto an existing colony's live cell must
+    // decrement the OLD owner's cell_count, or that cell is silently double-owned: the new
+    // colony's grid cell counts against neither colony correctly and the old colony leaks.
+    let mut w = World::new(128, 128);
+
+    // Keep-alive colony, spawned FIRST (before `a` and `b` below) and far away: a's tip dies
+    // boxed-in on the very first growth tick below, and since a's cell_count is already 0 at
+    // that point (the transfer decrements it immediately), a gets reaped in that SAME growth
+    // tick -- before this keep-alive colony would otherwise be spawned. Spawning it first
+    // ensures it claims its own fresh id rather than stealing a's just-freed one, so the final
+    // "id recycled" assertion below unambiguously checks the (5,5) spawn against `a`.
+    for x in 60..120 { for y in 80..110 { w.paint(x as i32, y as i32, 0, Material::Soil as u8); w.set_soil_richness(x, y, 200); } }
+    w.spawn_colony(90, 95);
+
+    let (bx, by) = (20usize, 20usize);
+    let a = spawn_rock_boxed_colony(&mut w, bx, by);
+    assert_eq!(w.colony_cell_count(a), 1, "setup: a's root is its only cell");
+
+    // Simulate Spore ammo landing exactly on a's live root cell before a's tip has had any
+    // chance to grow or die -- the transfer must decrement a's cell_count regardless.
+    let b = spawn_rock_boxed_colony(&mut w, bx, by);
+    assert_ne!(a, b, "the new colony must get a fresh id, not reuse a's (a still has other state live)");
+    assert_eq!(w.colony_cell_count(a), 0, "a's transferred cell must no longer count toward a");
+    assert_eq!(w.colony_cell_count(b), 1, "b now owns the cell it just claimed");
+    assert_eq!(w.get(bx, by), Material::Mycelium);
+
+    let interval = (w.params.values[sandgun_core::params::P_MY_GROWTH_INTERVAL] as usize).max(1);
+    // Both tips sit on the same boxed-in cell and die on the same first growth tick (no double
+    // free / no panic), leaving a reap-able (0 cells) and b holding its one real cell.
+    for _ in 0..(3 * interval) { w.step(); }
+    assert_eq!(w.colony_tip_count(a), 0);
+    assert_eq!(w.colony_tip_count(b), 0);
+    assert_eq!(w.colony_cell_count(a), 0, "a has no cells and must never regain any");
+    assert_eq!(w.colony_cell_count(b), 1, "b's own root cell is untouched by a's bookkeeping");
+
+    // a is now cell-less and tip-less. Proving it was actually REAPED (not just marked dead)
+    // requires its id to come back out of a later spawn_colony -- b's one real cell means b
+    // correctly must NOT be recycled while that cell remains.
+    let recycled = w.spawn_colony(5, 5);
+    assert_eq!(recycled, a, "a's id is recycled once it has neither tips nor cells left");
+}
+
