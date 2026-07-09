@@ -38,5 +38,6 @@
   "soil_richness_max": 120,
   "mush_lifespan": 900,
   "my_max_air_reach": 3,
-  "my_strand_width": 2
+  "my_strand_width": 2,
+  "my_max_colonies": 64
 }

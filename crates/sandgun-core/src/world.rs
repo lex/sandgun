@@ -18,6 +18,10 @@ const AVATAR_GRAVITY: f32 = 0.3;
 const AVATAR_WALK: f32 = 1.4;
 const AVATAR_JUMP: f32 = 4.2;
 const AVATAR_MAX_FALL: f32 = 6.0;
+/// Search radius (in cells) `find_spore_landing_site` scans around a Spore round's impact point
+/// for a Soil/Soil-adjacent landing site, so a round fired into open air still plants on
+/// substrate instead of as a floating stub. See M1e cleanup task 2.
+const SPORE_LANDING_SEARCH_RADIUS: isize = 3;
 
 pub struct World {
     pub width: usize,
@@ -455,14 +459,54 @@ impl World {
                 self.inject_blob(cx, cy, r, Material::Acid);
             }
             Ammo::Spore => {
-                // Spore ammo is "the builder": it plants a living colony at the impact point
-                // (spawn_colony lays the origin mycelium cell + one tip regardless of what was
-                // there before), rather than just painting inert mycelium.
+                // Spore ammo is "the builder": it plants a living colony (spawn_colony lays the
+                // origin mycelium cell + one tip), rather than just painting inert mycelium.
+                //
+                // M1e cleanup task 2: two things can make a bare `spawn_colony(cx, cy)` wrong
+                // here. (1) The concurrent-colony cap (P_MY_MAX_COLONIES / the 255 aux-id hard
+                // cap) means spawn_colony can return 0 ("no colony") -- that must be a quiet
+                // no-op, never a tip/cell referencing nonexistent colony 0. (2) A round fired
+                // into open air would otherwise plant a floating stub with no substrate under
+                // it, so search the impact's neighborhood for a Soil cell (or an Empty cell
+                // adjacent to Soil) and plant there instead; if nothing qualifies within the
+                // search radius, skip entirely (no colony, no puff) rather than float one in air.
                 let r = self.params.values[P_SPORE_BLOB_RADIUS] as isize;
-                self.spawn_colony(cx as usize, cy as usize);
-                self.inject_blob(cx, cy - r, (r / 2).max(1), Material::SporeGas); // a puff above
+                if let Some((sx, sy)) = self.find_spore_landing_site(cx, cy, SPORE_LANDING_SEARCH_RADIUS) {
+                    if self.spawn_colony(sx, sy) != 0 {
+                        self.inject_blob(cx, cy - r, (r / 2).max(1), Material::SporeGas); // a puff above
+                    }
+                }
             }
         }
+    }
+
+    /// Find a landing site for Spore ammo near an impact point: a Soil cell (plant directly on
+    /// substrate) or an Empty cell adjacent to Soil (plant right next to it), searched in
+    /// concentric square rings out to `radius` so the closest qualifying cell wins. None if
+    /// nothing qualifies anywhere in the neighborhood (e.g. deep open air, no soil nearby) --
+    /// callers should skip planting entirely in that case rather than float a colony in air.
+    /// Deterministic fixed scan order (row-major within each ring); no RNG.
+    fn find_spore_landing_site(&self, cx: isize, cy: isize, radius: isize) -> Option<(usize, usize)> {
+        for r in 0..=radius {
+            for dy in -r..=r {
+                for dx in -r..=r {
+                    if dx.abs().max(dy.abs()) != r { continue; } // only this ring's perimeter
+                    let (x, y) = (cx + dx, cy + dy);
+                    if !self.in_bounds(x, y) { continue; }
+                    let m = self.material_at(x, y);
+                    if m == Material::Soil || (m == Material::Empty && self.adjacent_to_soil(x, y)) {
+                        return Some((x as usize, y as usize));
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// True if any of the 8 neighbors of (x,y) is Soil.
+    fn adjacent_to_soil(&self, x: isize, y: isize) -> bool {
+        const D: [(isize, isize); 8] = [(-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)];
+        D.iter().any(|&(dx, dy)| self.material_at(x + dx, y + dy) == Material::Soil)
     }
 
     fn carve_crater(&mut self, cx: isize, cy: isize, radius: isize, ejecta_frac: f32) {

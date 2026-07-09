@@ -90,11 +90,15 @@ impl World {
         id
     }
 
-    /// Allocate a colony id: reuse a freed one, else the next unused id (1..=255). None at the cap.
+    /// Allocate a colony id: reuse a freed one, else the next unused id (1..=255). None at the
+    /// cap -- either the 255 hard cap (aux is u8, 0 reserved for "none") or the lower
+    /// `P_MY_MAX_COLONIES` soft cap (task 2), whichever is smaller. `colonies.len()` is exactly
+    /// the count of currently-live colonies (reaped ones are removed from the Vec, not just
+    /// marked dead -- see Task 1), so this caps CONCURRENT colonies, not cumulative spawns.
     fn alloc_colony_id(&mut self) -> Option<u8> {
+        let cap = (self.params.values[crate::params::P_MY_MAX_COLONIES].max(0.0) as usize).min(255);
+        if self.free_colony_ids.is_empty() && self.colonies.len() >= cap { return None; }
         if let Some(id) = self.free_colony_ids.pop() { return Some(id); }
-        // ids in use are exactly those in `colonies` (reaped ones went to the free-list). Next id
-        // is len+1 while under 255; the concurrent cap is 255 (aux is u8, 0 reserved for "none").
         let next = self.colonies.len() + 1;
         if next <= 255 { Some(next as u8) } else { None }
     }

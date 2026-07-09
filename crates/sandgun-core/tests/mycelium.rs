@@ -1381,3 +1381,103 @@ fn spore_onto_existing_colony_cell_transfers_ownership_cleanly() {
     assert_eq!(recycled, a, "a's id is recycled once it has neither tips nor cells left");
 }
 
+// --- M1e cleanup task 2: concurrent-colony cap + Spore ammo tolerates a full table ---
+
+#[test]
+fn spore_ammo_at_colony_cap_is_a_noop() {
+    // Set the soft cap low and fill it, then fire Spore ammo into a scene where a landing site
+    // (soil) genuinely exists nearby -- this must still be a no-op at the cap: spawn_colony
+    // returns 0 (Task 1), and the caller must not create a tip/cell for colony 0.
+    let mut w = World::new(64, 64);
+    w.params.values[sandgun_core::params::P_MY_MAX_COLONIES] = 2.0;
+
+    for x in 0..64 {
+        w.paint(x, 41, 0, Material::Rock as u8); // floor so soil can't avalanche
+        for y in 30..40 {
+            w.paint(x, y, 0, Material::Soil as u8);
+        }
+    }
+    for x in 0..64usize {
+        for y in 30..40usize {
+            w.set_soil_richness(x, y, 150);
+        }
+    }
+
+    w.spawn_colony(5, 5);
+    w.spawn_colony(55, 5);
+    assert_eq!(w.colony_count(), 2, "setup: colony table is at the cap");
+    let tips_before = w.tip_count();
+
+    w.fire(5.0, 35.0, 12.0, 0.0, Ammo::Spore as u8); // fired into the soil band, same as spore_ammo_plants_a_growing_colony
+    w.step();
+
+    assert_eq!(w.colony_count(), 2, "colony count must never exceed the concurrent cap");
+    assert_eq!(
+        w.tip_count(),
+        tips_before,
+        "no tip should be created for a colony that couldn't be allocated (id 0)"
+    );
+}
+
+#[test]
+fn spore_ammo_plants_on_substrate_not_air() {
+    // Fire Spore ammo so its impact point is in open air (a thin Rock wall stops the round a
+    // few rows above a soil patch) rather than directly on/adjacent to substrate. The old
+    // behavior (spawn_colony straight at the impact point) would plant a floating stub with no
+    // Soil neighbor at all. The fix must instead search the nearby neighborhood and plant on
+    // Soil or an Empty cell adjacent to Soil.
+    let mut w = World::new(64, 64);
+    for x in 0..64 {
+        w.paint(x, 41, 0, Material::Rock as u8); // floor so soil can't avalanche
+        for y in 40..41 {
+            w.paint(x, y, 0, Material::Soil as u8);
+        }
+    }
+    for x in 0..64usize {
+        w.set_soil_richness(x, 40, 150);
+    }
+    // A single Rock cell in open air, 3 rows above the soil band -- the round impacts this,
+    // NOT the soil, so the naive impact point is a floating air cell.
+    w.paint(30, 37, 0, Material::Rock as u8);
+
+    assert_eq!(w.colony_count(), 0, "setup: no colonies yet");
+    // vx is large enough to cross the full x=10 -> x=30 gap within a single w.step() call's
+    // ray-march (each step() only advances a projectile by roughly vx cells of substeps).
+    w.fire(10.0, 37.0, 25.0, 0.0, Ammo::Spore as u8); // flies straight at the Rock cell at (30,37)
+    w.step();
+
+    assert!(w.colony_count() > 0, "a landing site (soil is within the search radius) should have been found and planted");
+
+    // Find the planted root cell and confirm it sits ON Soil or directly ADJACENT to Soil --
+    // never a bare floating cell with no substrate neighbor at all.
+    let mut root: Option<(usize, usize)> = None;
+    for x in 0..64usize {
+        for y in 0..64usize {
+            if w.get(x, y) == Material::Mycelium {
+                root = Some((x, y));
+            }
+        }
+    }
+    let (rx, ry) = root.expect("a Mycelium root cell should have been planted");
+    let on_or_adjacent_to_soil = {
+        let mut found = false;
+        for dy in -1i32..=1 {
+            for dx in -1i32..=1 {
+                let (nx, ny) = (rx as i32 + dx, ry as i32 + dy);
+                if nx < 0 || ny < 0 || nx as usize >= 64 || ny as usize >= 64 {
+                    continue;
+                }
+                if w.get(nx as usize, ny as usize) == Material::Soil {
+                    found = true;
+                }
+            }
+        }
+        found
+    };
+    assert!(
+        on_or_adjacent_to_soil,
+        "planted colony root at ({rx},{ry}) must sit on or adjacent to Soil, not floating in open air"
+    );
+    assert_ne!((rx, ry), (30, 37), "must not plant at the bare air impact point itself");
+}
+

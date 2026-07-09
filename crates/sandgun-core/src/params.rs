@@ -46,7 +46,9 @@ pub const P_MUSH_LIFESPAN: usize = 37;      // growth ticks a completed mushroom
 // --- M1e playtest fixes: keep strands on substrate, wiggly, 2-wide ---
 pub const P_MY_MAX_AIR_REACH: usize = 38;   // max consecutive Empty cells a tip may cross before it must reach Soil again
 pub const P_MY_STRAND_WIDTH: usize = 39;    // cells wide a growing strand lays down (bounded 2-3)
-pub const P_COUNT: usize = 40;
+// --- M1e cleanup: concurrent-colony cap (task 2) ---
+pub const P_MY_MAX_COLONIES: usize = 40;    // max concurrently-alive colonies (soft cap below the 255 aux-id hard cap)
+pub const P_COUNT: usize = 41;
 
 /// Hot-tunable sim parameters. Index constants are mirrored in web/src/params.js — keep in sync.
 pub struct Params {
@@ -96,6 +98,7 @@ impl Default for Params {
         v[P_MUSH_LIFESPAN] = 900.0;
         v[P_MY_MAX_AIR_REACH] = 3.0;
         v[P_MY_STRAND_WIDTH] = 2.0;
+        v[P_MY_MAX_COLONIES] = 64.0;
         Params { values: v }
     }
 }
