@@ -1,4 +1,4 @@
-use crate::cell::{Cell, Material};
+use crate::cell::{Cell, Material, FLAG_BURNING};
 use crate::world::World;
 use std::collections::HashSet;
 
@@ -427,6 +427,14 @@ impl World {
     /// exact bug this rewrite is fixing). A plain path cell has at most 2 same-colony neighbors
     /// (its predecessor and successor); a chord endpoint has 3+. Preferring the lower-degree
     /// neighbor keeps the walk on the actual strand instead of jumping the chord.
+    ///
+    /// A neighbor also counts as same-colony when it's Mycelium and FLAG_BURNING (task 4, M1e
+    /// cleanup): once a cell ignites, its aux becomes the fuel countdown rather than the colony
+    /// id (see ignite_blast/ignite_neighbors), so a plain aux == colony_id check would treat a
+    /// burning same-strand neighbor as foreign and die at it, stranding everything beyond it as
+    /// a permanent stub. Growth never lays foreign mycelium adjacent to another colony's strand,
+    /// so a burning neighbor here is overwhelmingly part of THIS strand -- and it will
+    /// self-remove via burnout regardless, so treating it as traversable costs nothing.
     fn adjacent_same_colony_mycelium(&self, x: usize, y: usize, colony_id: u8) -> Option<(usize, usize)> {
         const D: [(isize, isize); 8] = [(-1,-1),(0,-1),(1,-1),(-1,0),(1,0),(-1,1),(0,1),(1,1)];
         let (tx, ty) = (x as isize, y as isize);
@@ -436,7 +444,11 @@ impl World {
             let (nx, ny) = (tx + dx, ty + dy);
             if !self.in_bounds(nx, ny) { continue; }
             let (ux, uy) = (nx as usize, ny as usize);
-            if self.get(ux, uy) != Material::Mycelium || self.cell_aux(ux, uy) != colony_id { continue; }
+            if self.get(ux, uy) != Material::Mycelium
+                || (self.cell_aux(ux, uy) != colony_id && self.cell_flags(ux, uy) & FLAG_BURNING == 0)
+            {
+                continue;
+            }
             let degree = self.same_colony_mycelium_degree(ux, uy, colony_id);
             if degree < best_degree {
                 best_degree = degree;
@@ -446,7 +458,8 @@ impl World {
         best
     }
 
-    /// Count `colony_id`'s Mycelium cells among the 8 neighbors of (x, y).
+    /// Count `colony_id`'s Mycelium cells among the 8 neighbors of (x, y). See
+    /// `adjacent_same_colony_mycelium` for why a burning Mycelium neighbor also counts.
     fn same_colony_mycelium_degree(&self, x: usize, y: usize, colony_id: u8) -> i32 {
         const D: [(isize, isize); 8] = [(-1,-1),(0,-1),(1,-1),(-1,0),(1,0),(-1,1),(0,1),(1,1)];
         let (tx, ty) = (x as isize, y as isize);
@@ -455,7 +468,9 @@ impl World {
             let (nx, ny) = (tx + dx, ty + dy);
             if !self.in_bounds(nx, ny) { continue; }
             let (ux, uy) = (nx as usize, ny as usize);
-            if self.get(ux, uy) == Material::Mycelium && self.cell_aux(ux, uy) == colony_id {
+            if self.get(ux, uy) == Material::Mycelium
+                && (self.cell_aux(ux, uy) == colony_id || self.cell_flags(ux, uy) & FLAG_BURNING != 0)
+            {
                 n += 1;
             }
         }

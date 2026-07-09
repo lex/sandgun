@@ -545,6 +545,110 @@ fn winding_strand_fully_recedes_no_stubs() {
     assert_eq!(w.cells_processed, 0, "receded, settled world sleeps");
 }
 
+/// A straight, 1-wide, rock-walled soil corridor of exactly `length` cells starting at
+/// (10, 60) and running rightward, with the colony's tip's own root-ward growth guaranteed to
+/// lay down exactly `length` Mycelium cells over `length` growth ticks (no branching, no
+/// perpendicular thickening -- same technique as `spawn_colony_in_forced_zigzag_corridor`).
+/// Leaves one Empty gap in the wall directly above `gap_x` so a test can plant a Fire cell
+/// there and let it spread into the corridor via the normal ignite_neighbors path.
+fn spawn_colony_in_straight_corridor(w: &mut World, length: i32, gap_x: i32) -> u8 {
+    let (start_x, start_y) = (10i32, 60i32);
+    let (min_x, max_x) = (start_x - 1, start_x + length + 1);
+    let (min_y, max_y) = (start_y - 1, start_y + 1);
+    for yy in min_y..=max_y {
+        for xx in min_x..=max_x {
+            w.paint(xx, yy, 0, Material::Rock as u8);
+        }
+    }
+    for i in 0..=length {
+        w.paint(start_x + i, start_y, 0, Material::Soil as u8);
+    }
+    w.paint(gap_x, start_y - 1, 0, Material::Empty as u8);
+    w.spawn_colony(start_x as usize, start_y as usize)
+}
+
+#[test]
+fn recede_continues_past_a_burning_segment() {
+    // Regression (M1e cleanup task 4): a burning Mycelium cell's aux holds the fuel countdown,
+    // not the colony id, so recede_tip's adjacent_same_colony_mycelium used to treat a burning
+    // same-strand neighbor as foreign. A tip receding through a strand whose next segment is on
+    // fire died right there, permanently stranding the rest of the strand (root-ward of the
+    // fire) as dead Mycelium that no tip would ever revert.
+    let mut w = World::new(192, 128);
+    // Isolate recede_tip: no branching, single-cell-wide strand, so the grown path is a known
+    // straight line (same technique as dieback_reverts_multiple_cells_per_tick /
+    // winding_strand_fully_recedes_no_stubs).
+    w.params.values[sandgun_core::params::P_MY_BRANCH_CHANCE] = 0.0;
+    w.params.values[sandgun_core::params::P_MY_STRAND_WIDTH] = 1.0;
+    // Recede several cells per growth tick so the strand fully unwinds within a modest step
+    // budget.
+    w.params.values[sandgun_core::params::P_MY_DIEBACK] = 5.0;
+    // Guarantee ignition on the very first adjacent contact, and give the ignited cell far more
+    // fuel than it could possibly need before recede reaches it -- the point of this test is
+    // recede walking through a cell that is STILL burning, not a race against its own burnout.
+    w.params.values[sandgun_core::params::P_FLAM_MYCELIUM] = 1.0;
+    w.params.values[sandgun_core::params::P_FUEL_MYCELIUM] = 500.0;
+
+    let start_x = 10i32;
+    let start_y = 60i32;
+    let length = 90i32; // matches the 90 growth ticks run below (STARVE_GRACE_TICKS)
+    let mid_x = start_x + length / 2;
+    let id = spawn_colony_in_straight_corridor(&mut w, length, mid_x);
+
+    // Grow for exactly the grace period's worth of growth ticks -- one tick shy of starving --
+    // so the strand is a known straight line from start_x to start_x+length.
+    let interval = w.params.values[sandgun_core::params::P_MY_GROWTH_INTERVAL] as usize;
+    for _ in 0..(90 * interval) { w.step(); }
+    assert_eq!(
+        w.get(mid_x as usize, start_y as usize),
+        Material::Mycelium,
+        "setup: growth should have reached past the midpoint before starving"
+    );
+
+    // Ignite the midpoint cell via the normal fire-spread path (not by poking flags directly),
+    // same technique as burning_flesh_puffs_non_burning_spores.
+    w.paint(mid_x, start_y - 1, 0, Material::Fire as u8);
+    for _ in 0..5 {
+        w.step();
+        if w.cell_flags(mid_x as usize, start_y as usize) & sandgun_core::cell::FLAG_BURNING != 0 {
+            break;
+        }
+    }
+    assert_ne!(
+        w.cell_flags(mid_x as usize, start_y as usize) & sandgun_core::cell::FLAG_BURNING,
+        0,
+        "setup: the midpoint cell should have caught fire"
+    );
+    // Stop the fire from cascading down the rest of the strand -- this test is about recede
+    // walking through ONE still-burning cell, not about the whole corridor burning down on its
+    // own regardless of recede (P_FLAM_MYCELIUM=1.0 above guaranteed the single ignition; left
+    // at 1.0 it would also guarantee ignite_neighbors keeps igniting every other Mycelium cell
+    // along the strand every frame, clearing it independent of the bug this test targets).
+    w.params.values[sandgun_core::params::P_FLAM_MYCELIUM] = 0.0;
+
+    // One more growth tick (age_ticks now > 90) starts starvation/recede; run long enough for
+    // the tip to fully recede -- straight through the still-burning midpoint cell -- and for the
+    // world to settle.
+    for _ in 0..(300 * interval) { w.step(); }
+    w.step();
+
+    assert_eq!(w.tip_count(), 0, "starved tip should have died once fully receded");
+    assert_eq!(
+        count_mycelium(&w, (192, 128)),
+        0,
+        "recede should continue past the burning segment and fully unwind the strand -- no \
+         permanent stub left behind it"
+    );
+    assert_eq!(w.cells_processed, 0, "receded, settled world sleeps");
+    // Task 1's cell_count accounting must not have been double-decremented by traversing the
+    // burning cell (it was already decremented once, at ignition) -- otherwise this would
+    // underflow (saturating, so silently wrong rather than panicking) or the colony would reap
+    // prematurely mid-strand. With every cell gone, the colony should reap cleanly: 0 cells and
+    // no longer present in the colony list at all.
+    assert_eq!(w.colony_cell_count(id), 0, "colony should have no cells left after full recede");
+    assert_eq!(w.colony_count(), 0, "fully-receded, tipless colony should have been reaped");
+}
+
 // --- Task 5: support/anchor -- carve-flood; unsupported chunks fall & die ---
 
 #[test]
