@@ -49,6 +49,8 @@ pub struct World {
     /// M1e living-mycelium organism model: colonies and their growing tips.
     pub(crate) colonies: Vec<Colony>,
     pub(crate) tips: Vec<Tip>,
+    /// Ids freed by reaped colonies (LIFO), recycled by `alloc_colony_id` before minting a new one.
+    pub(crate) free_colony_ids: Vec<u8>,
 }
 
 impl World {
@@ -77,6 +79,7 @@ impl World {
             my_grow_countdown: 0,
             colonies: Vec::new(),
             tips: Vec::new(),
+            free_colony_ids: Vec::new(),
         }
     }
 
@@ -115,6 +118,7 @@ impl World {
         self.my_grow_countdown = 0;
         self.colonies.clear();
         self.tips.clear();
+        self.free_colony_ids.clear();
     }
 
     /// Wake every chunk for the next step (used after worldgen).
@@ -485,6 +489,13 @@ impl World {
                               // carved cell that was mid-burn (flesh ignited by a spreading fire)
                               // doesn't inherit FLAG_BURNING with aux=0 and phantom-detonate next tick
                 }
+                // A carved Mycelium cell's aux is only trustworthy as a colony id if it was never
+                // lit -- once burning, aux is the fuel countdown (see ignite_blast/
+                // ignite_neighbors) and colony_cell_removed was already called at ignition time.
+                if m == Material::Mycelium && self.cells[i].flags & FLAG_BURNING == 0 {
+                    let cid = self.cells[i].aux;
+                    self.colony_cell_removed(cid);
+                }
                 self.cells[i] = Cell::default();
                 self.wake(ux, uy);
             }
@@ -509,6 +520,17 @@ impl World {
                 let i = self.idx(ux, uy);
                 let m = Material::from_u8(self.cells[i].material);
                 if self.params.flammability(m) > 0.0 {
+                    // Ignition is the last moment a Mycelium cell's aux is still its colony id --
+                    // once FLAG_BURNING is set, aux becomes the fuel countdown for the rest of
+                    // this cell's life (burnout, or any carve/acid removal while still burning),
+                    // so the colony's cell_count must be decremented HERE, not at burnout. Only
+                    // do this the first time a cell catches fire (an already-burning cell hit by
+                    // another blast has already been accounted for; its current aux is fuel, not
+                    // a colony id, and must not be misread as one).
+                    if m == Material::Mycelium && self.cells[i].flags & FLAG_BURNING == 0 {
+                        let cid = self.cells[i].aux;
+                        self.colony_cell_removed(cid);
+                    }
                     self.cells[i].flags |= FLAG_BURNING;
                     // Deliberately refuel already-burning cells (owner ruling 2026-07-04):
                     // incendiary blasts refresh fires — this differs from ignite_neighbors,
@@ -544,6 +566,12 @@ impl World {
                 if dst == Material::Empty || soft {
                     if matches!(dst, Material::Mycelium | Material::MushroomFlesh) {
                         overwrote_mycelium_or_flesh = true;
+                    }
+                    // Same aux caveat as carve_crater: only decrement if this Mycelium cell was
+                    // never lit (aux still the colony id, not a stale fuel countdown).
+                    if dst == Material::Mycelium && self.cells[i].flags & FLAG_BURNING == 0 {
+                        let cid = self.cells[i].aux;
+                        self.colony_cell_removed(cid);
                     }
                     self.cells[i] = Cell::new(material, (self.next_rand() & 3) as u8);
                     self.wake(ux, uy);
@@ -752,6 +780,11 @@ impl World {
         // slick floating on a pool keeps burning
         for (nx, ny) in [(xi, yi - 1), (xi + 1, yi), (xi - 1, yi)] {
             if self.material_at(nx, ny) == Material::Water {
+                // Note: this doesn't remove the cell (material stays Mycelium) so it's not a
+                // colony_cell_removed site by definition -- and aux here is already the fuel
+                // countdown, not the colony id (already accounted for at ignition), so there is
+                // nothing left to read anyway. A cell extinguished this way keeps occupying the
+                // grid as an orphan Mycelium husk (aux=0) until some later removal path clears it.
                 self.cells[i].flags &= !FLAG_BURNING;
                 self.cells[i].aux = 0;
                 self.wake(x, y);
@@ -760,6 +793,10 @@ impl World {
         }
         if self.cells[i].aux == 0 {
             // fuel spent: burn to the product material
+            // Note: no colony_cell_removed call here for a Mycelium cell -- once a cell starts
+            // burning, aux becomes the fuel countdown (see ignite_blast/ignite_neighbors below),
+            // never the colony id, so its colony's cell_count was already decremented back at
+            // ignition time, not here (aux is always 0 by the time this branch runs anyway).
             let product = match mat {
                 // Only sometimes leaves Ash behind -- a burnt mushroom colony should mostly
                 // disappear, not blanket the ground 1:1 in ash.
@@ -831,6 +868,12 @@ impl World {
             let nmat = Material::from_u8(self.cells[ni].material);
             let p = self.params.flammability(nmat);
             if p > 0.0 && self.chance(p) {
+                // See ignite_blast's comment: this is the last point aux is still the colony id
+                // for a Mycelium cell (the `continue` above already guarantees it wasn't burning).
+                if nmat == Material::Mycelium {
+                    let cid = self.cells[ni].aux;
+                    self.colony_cell_removed(cid);
+                }
                 self.cells[ni].flags |= FLAG_BURNING;
                 self.cells[ni].aux = self.params.fuel(nmat);
                 // Stamp as acted-this-frame so the bottom-up sweep doesn't process this
@@ -890,6 +933,12 @@ impl World {
             let p = self.acid_etch_chance(target);
             if p > 0.0 && self.chance(p) {
                 let ni = self.idx(nx as usize, ny as usize);
+                // Same aux caveat as carve_crater/inject_blob: only decrement if this Mycelium
+                // cell was never lit (aux still the colony id, not a stale fuel countdown).
+                if target == Material::Mycelium && self.cells[ni].flags & FLAG_BURNING == 0 {
+                    let cid = self.cells[ni].aux;
+                    self.colony_cell_removed(cid);
+                }
                 self.cells[ni] = Cell::default();
                 self.stamp[ni] = self.frame_u8();
                 self.wake(nx as usize, ny as usize);

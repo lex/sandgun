@@ -36,6 +36,9 @@ pub struct Colony {
     pub alive: bool,
     /// Growth ticks since this colony was spawned; see STARVE_GRACE_TICKS.
     pub age_ticks: u32,
+    /// Live Mycelium cells in the grid owned by this colony (aux == id). A colony is only reaped
+    /// (and its id recycled) once this reaches 0, so a recycled id can never mislabel orphan cells.
+    pub cell_count: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -62,10 +65,12 @@ impl World {
             self.cells[i].aux = v;
         }
     }
-    /// Create a colony rooted at (x,y): lay a mycelium cell (aux=colony id) and one tip.
+    /// Create a colony rooted at (x,y): lay a mycelium cell (aux=colony id) and one tip. Returns
+    /// 0 (no colony created) if the concurrent-colony cap has been reached -- see
+    /// `alloc_colony_id`; callers must tolerate 0.
     pub fn spawn_colony(&mut self, x: usize, y: usize) -> u8 {
-        let id = (self.colonies.len() as u8).wrapping_add(1); // 1-based; v1 assumes < 255 colonies
-        self.colonies.push(Colony { id, nutrient_pool: 0, tip_count: 1, alive: true, age_ticks: 0 });
+        let Some(id) = self.alloc_colony_id() else { return 0; };
+        self.colonies.push(Colony { id, nutrient_pool: 0, tip_count: 1, alive: true, age_ticks: 0, cell_count: 1 });
         let i = self.idx(x, y);
         self.cells[i].material = Material::Mycelium as u8;
         self.cells[i].aux = id;
@@ -73,6 +78,24 @@ impl World {
         self.wake(x, y);
         self.tips.push(Tip { x, y, colony: id, last_dx: 0, last_dy: -1, alive: true, air_run: 0 });
         id
+    }
+
+    /// Allocate a colony id: reuse a freed one, else the next unused id (1..=255). None at the cap.
+    fn alloc_colony_id(&mut self) -> Option<u8> {
+        if let Some(id) = self.free_colony_ids.pop() { return Some(id); }
+        // ids in use are exactly those in `colonies` (reaped ones went to the free-list). Next id
+        // is len+1 while under 255; the concurrent cap is 255 (aux is u8, 0 reserved for "none").
+        let next = self.colonies.len() + 1;
+        if next <= 255 { Some(next as u8) } else { None }
+    }
+
+    /// Account a Mycelium cell newly laid for `id`.
+    pub(crate) fn colony_cell_laid(&mut self, id: u8) {
+        if let Some(c) = self.colonies.iter_mut().find(|c| c.id == id) { c.cell_count = c.cell_count.saturating_add(1); }
+    }
+    /// Account a Mycelium cell of `id` removed from the grid (reverted/carved/burned/dissolved/dropped).
+    pub(crate) fn colony_cell_removed(&mut self, id: u8) {
+        if let Some(c) = self.colonies.iter_mut().find(|c| c.id == id) { c.cell_count = c.cell_count.saturating_sub(1); }
     }
     pub fn colony_count(&self) -> usize { self.colonies.iter().filter(|c| c.alive).count() }
     pub fn tip_count(&self) -> usize { self.tips.iter().filter(|t| t.alive).count() }
@@ -167,13 +190,20 @@ impl World {
                 c.tip_count += 1;
             }
         }
-        // A colony that has fully receded (no live tips) and has nothing left to grow with
-        // (empty pool) is done: mark it dead so it's no longer reported as a living colony.
+        // A colony with no live tips is functionally dead (nothing left to grow or fruit from).
+        // Zero any leftover pool so it can't linger as a "zombie", then reap it once none of its
+        // cells remain in the grid -- freeing its id for reuse (an id with live cells is NOT
+        // recycled, so a new colony can never inherit old cells).
         for c in self.colonies.iter_mut() {
-            if c.tip_count == 0 && c.nutrient_pool == 0 {
-                c.alive = false;
-            }
+            if c.tip_count == 0 { c.alive = false; c.nutrient_pool = 0; }
         }
+        let mut freed: Vec<u8> = Vec::new();
+        self.colonies.retain(|c| {
+            let reap = !c.alive && c.cell_count == 0;
+            if reap { freed.push(c.id); }
+            !reap
+        });
+        self.free_colony_ids.extend(freed);
         // Fruiting: a colony fed above threshold spends a chunk of its pool to sprout a
         // mushroom at one of its own well-fed tips. This REPLACES the old aux-maturity random
         // fruiting trigger -- fruiting now only ever happens through the nutrient economy.
@@ -250,6 +280,7 @@ impl World {
         self.cells[i].aux = t.colony; // colony id; overwrites soil richness (now spent)
         self.cells[i].flags &= !crate::cell::FLAG_BURNING;
         self.wake(ux, uy);
+        self.colony_cell_laid(t.colony);
         let (dx, dy) = (nx - t.x as isize, ny - t.y as isize);
         self.tips[ti].x = ux;
         self.tips[ti].y = uy;
@@ -306,6 +337,7 @@ impl World {
             self.cells[wi].aux = colony_id;
             self.cells[wi].flags &= !crate::cell::FLAG_BURNING;
             self.wake(wux, wuy);
+            self.colony_cell_laid(colony_id);
         }
     }
 
@@ -336,6 +368,15 @@ impl World {
             let (x, y) = (self.tips[ti].x, self.tips[ti].y);
             let i = self.idx(x, y);
             if Material::from_u8(self.cells[i].material) == Material::Mycelium {
+                // Only trust aux as the colony id if this cell was never lit: once a Mycelium
+                // cell ignites, its aux becomes the fuel countdown (see ignite_blast/
+                // ignite_neighbors in world.rs), and colony_cell_removed was already called
+                // there -- reading aux here for a burning cell would misattribute a fuel number
+                // as some other colony's id.
+                if self.cells[i].flags & crate::cell::FLAG_BURNING == 0 {
+                    let cid = self.cells[i].aux;
+                    self.colony_cell_removed(cid);
+                }
                 self.cells[i].material = Material::Empty as u8;
                 self.cells[i].aux = 0;
                 self.cells[i].flags = 0;
@@ -522,6 +563,13 @@ impl World {
         for (ux, uy) in group {
             let i = self.idx(ux, uy);
             let mat = self.cells[i].material;
+            // Mushroom flesh has aux=0 (not colony-tracked); a burning Mycelium cell's aux is
+            // already the fuel countdown (see recede_tip's comment) and was already accounted
+            // for at ignition -- only decrement for a non-burning Mycelium cell.
+            if mat == Material::Mycelium as u8 && self.cells[i].flags & crate::cell::FLAG_BURNING == 0 {
+                let cid = self.cells[i].aux;
+                self.colony_cell_removed(cid);
+            }
             self.cells[i] = Cell::default();
             self.spawn_particle(ux as f32 + 0.5, uy as f32 + 0.5, 0.0, DROP_FALL_VY, mat);
             self.wake(ux, uy);

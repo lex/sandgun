@@ -112,10 +112,20 @@ fn eating_soil_fills_the_colony_pool() {
     for x in 30..50 { for y in 30..40 { w.paint(x as i32, y as i32, 0, Material::Soil as u8); w.set_soil_richness(x, y, 150); } }
     let id = w.spawn_colony(32, 35);
     let before = w.colony_pool(id);
-    // Mycelium growth only runs 1 frame in P_MY_GROWTH_INTERVAL (3), so triple the step budget
-    // (300) to still afford ~100 growth ticks.
-    for _ in 0..300 { w.step(); }
-    assert!(w.colony_pool(id) > before, "eating rich soil should fill the pool");
+    // Sample the pool as soon as it grows, rather than requiring it to hold at the end of a long
+    // fixed run: this soil field has no rock floor, so it can (correctly) avalanche and eventually
+    // starve/reap the colony -- with the M1e task 1 reap pass, a colony with no live tips has its
+    // pool zeroed and is reaped once its cells are gone, which would read back as pool==0 and
+    // wrongly look like it never ate, even though it demonstrably did earlier in the same run.
+    let mut grew = false;
+    for _ in 0..300 {
+        w.step();
+        if w.colony_pool(id) > before {
+            grew = true;
+            break;
+        }
+    }
+    assert!(grew, "eating rich soil should fill the pool");
 }
 
 #[test]
@@ -1164,6 +1174,69 @@ fn mushroom_stems_vary_and_stay_connected() {
              ({last_stem_x}), not just the base x ({base_x})"
         );
     }
+}
+
+#[test]
+fn tipless_colony_is_reaped_not_zombied() {
+    let mut w = World::new(64, 64);
+    // colony in open air with no soil: grows a stub, tips die at the air-reach cap, then it
+    // has no tips. Even if it fruited nothing, it must be reaped (removed), not left alive.
+    let id = w.spawn_colony(32, 32);
+    for _ in 0..2000 { w.step(); }
+    assert_eq!(w.colony_pool(id), 0, "reaped/absent colony reports pool 0");
+    assert_eq!(w.colony_count(), 0, "a colony with no live tips and no live cells is reaped");
+}
+
+#[test]
+fn colony_id_is_recycled_after_reap() {
+    // The brief's literal setup (spawn_colony in a plain, all-open-air 64x64 world) does NOT
+    // actually exercise reaping here: with the default params (P_MY_MAX_AIR_REACH=3,
+    // P_MY_STRAND_WIDTH=2), a tip with no soil anywhere always hits the air-reach cap and dies
+    // via the "boxed in, pick_step found nowhere to go" path (same one exercised by
+    // tip_count_tracks_live_tips) a few growth ticks in -- well before STARVE_GRACE_TICKS(90)
+    // ever makes it eligible for the starvation-recede path (recede_tip). Since only recede_tip
+    // (or an explicit removal like fire/acid/carve) ever decrements cell_count, such a colony
+    // permanently keeps ~7 stub Mycelium cells in the grid (verified empirically) and its
+    // cell_count never reaches 0 -- so it correctly must NOT be reaped, or a recycled id would
+    // silently inherit ownership of those real, still-visible leftover cells (exactly the
+    // mislabeling bug this task exists to prevent).
+    //
+    // To genuinely exercise "id recycled once a colony is truly gone", use the same
+    // corridor-starvation setup as `winding_strand_fully_recedes_no_stubs` below, which already
+    // proves the strand fully unwinds to zero mycelium cells left in the grid (a real cell_count
+    // of 0, not just a dead-but-still-present stub).
+    let mut w = World::new(192, 128);
+    w.params.values[sandgun_core::params::P_MY_BRANCH_CHANCE] = 0.0;
+    w.params.values[sandgun_core::params::P_MY_STRAND_WIDTH] = 1.0;
+    let a = spawn_colony_in_forced_zigzag_corridor(&mut w);
+    let interval = w.params.values[sandgun_core::params::P_MY_GROWTH_INTERVAL] as usize;
+    for _ in 0..(400 * interval) { w.step(); }
+    w.step();
+    assert_eq!(w.tip_count(), 0, "setup: starved tip should have died once fully receded");
+    assert_eq!(
+        count_mycelium(&w, (192, 128)),
+        0,
+        "setup: colony should have fully unwound with no stub cells left"
+    );
+    let b = w.spawn_colony(50, 50);
+    assert_eq!(a, b, "the reaped colony's id is reused for the next colony");
+}
+
+#[test]
+fn colony_with_live_cells_keeps_its_id_until_cells_gone() {
+    // A colony that still has mycelium cells in the grid must NOT have its id reused, or a new
+    // colony would inherit ownership of the old cells.
+    // World dims must be multiples of CHUNK (64); the brief's 96x96 example doesn't satisfy
+    // that (a pre-existing World::new invariant, unrelated to this task -- same workaround as
+    // well_fed_colony_branches_up_to_the_cap above), so this uses 128x128 with the same soil
+    // field and colony coordinates (all well within bounds either way).
+    let mut w = World::new(128, 128);
+    for x in 0..96 { for y in 60..70 { w.paint(x as i32, y as i32, 0, Material::Soil as u8); w.set_soil_richness(x, y, 200); } }
+    let a = w.spawn_colony(48, 65);
+    for _ in 0..400 { w.step(); } // a grows a real network in the soil
+    // a is alive with cells; the next spawn must get a DIFFERENT id
+    let b = w.spawn_colony(10, 65);
+    assert_ne!(a, b, "an id with live cells is not recycled");
 }
 
 #[test]
