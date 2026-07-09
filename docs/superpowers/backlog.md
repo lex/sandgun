@@ -321,3 +321,19 @@ Harmless: no cell_count corruption (each released the cell at its own ignition),
 break (cell → Empty, never revisited) — worst case a relocated cosmetic stub. A full fix needs
 per-cell colony id preserved through burning, which the 4-byte cell can't hold. Accept as a
 bounded tradeoff for v1; revisit if it ever reads wrong in playtest.
+
+## T3 end-of-step drop-flood same-step race (M1e cleanup final review, 2026-07-09)
+Task 3 deferred the support-check flood to end-of-step: `drop_unsupported_pending` runs after
+the cell sweep, `grow_mycelium`, and `update_projectiles`, once per step, draining
+`pending_drop_checks` queued by any of those earlier phases. Because it runs last, it scans
+CURRENT material state -- including this step's own growth/spawns -- not just carry-in state
+from before the step. Two narrow same-step edges follow: a Mycelium cell laid this step (tip
+growth or a fresh `spawn_colony`) can be 8-connected into and dropped by a support check queued
+earlier this same step, before that cell existed; and conversely, growth can bridge a group to
+an anchor just before the deferred check runs, letting a should-drop group survive one extra
+step. Not a crash or accounting corruption -- `colony_cell_removed` still fires correctly for
+whatever actually drops -- just a cosmetic same-step spatial edge. A full fix would drain
+`pending_drop_checks` before `grow_mycelium`/`update_projectiles` run each step, at the cost of a
+one-step delay before crater-edge support checks see that step's removals. Documented as an
+accepted bounded tradeoff on `drop_unsupported_pending` (mycelium.rs); revisit only if it ever
+reads wrong in playtest.

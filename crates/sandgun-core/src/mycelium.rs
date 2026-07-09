@@ -97,7 +97,11 @@ impl World {
     /// marked dead -- see Task 1), so this caps CONCURRENT colonies, not cumulative spawns.
     fn alloc_colony_id(&mut self) -> Option<u8> {
         let cap = (self.params.values[crate::params::P_MY_MAX_COLONIES].max(0.0) as usize).min(255);
-        if self.free_colony_ids.is_empty() && self.colonies.len() >= cap { return None; }
+        // Checked unconditionally (not just when the free list is empty): P_MY_MAX_COLONIES is
+        // hot-tunable, so a recycled id must respect a cap that was LOWERED after it was freed --
+        // otherwise churn (spawn/reap/spawn) could keep refilling colonies.len() past a lowered
+        // cap forever via free-list reuse.
+        if self.colonies.len() >= cap { return None; }
         if let Some(id) = self.free_colony_ids.pop() { return Some(id); }
         let next = self.colonies.len() + 1;
         if next <= 255 { Some(next as u8) } else { None }
@@ -557,6 +561,18 @@ impl World {
     /// does zero work here, same as `drop_unsupported_around`'s existing chunk-sleep-safe budget.
     /// Determinism: `visited` is membership-only (never iterated), and the drop order follows the
     /// fixed push order of `pending_drop_checks` plus each flood's own deterministic queue order.
+    ///
+    /// ACCEPTED BOUNDED TRADEOFF (M1e cleanup final review): running at end-of-step -- after the
+    /// cell sweep, `grow_mycelium`, and `update_projectiles` have all already run -- means every
+    /// flood here sees THIS step's growth/spawns, not just carry-in state from before the step.
+    /// So a Mycelium cell laid this very step (by tip growth or a fresh `spawn_colony`) can get
+    /// 8-connected into and dropped by a support check that was queued earlier this same step,
+    /// before that cell existed; conversely, growth can bridge a group to an anchor just before
+    /// this runs, letting a should-drop group survive one extra step. Harmless either way -- no
+    /// accounting corruption (`colony_cell_removed` still fires correctly for whatever actually
+    /// drops) and no termination-safety impact, just a cosmetic same-step spatial edge case. A
+    /// full fix would drain `pending_drop_checks` before `grow_mycelium`/`update_projectiles` run,
+    /// at the cost of a one-step delay before crater-edge support checks see that step's removals.
     pub fn drop_unsupported_pending(&mut self) {
         if self.pending_drop_checks.is_empty() {
             return;

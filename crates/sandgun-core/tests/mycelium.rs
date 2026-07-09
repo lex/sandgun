@@ -1650,3 +1650,58 @@ fn spore_ammo_plants_on_substrate_not_air() {
     assert_ne!((rx, ry), (30, 37), "must not plant at the bare air impact point itself");
 }
 
+// --- M1e cleanup final review: recycled-id spawns must respect a lowered cap ---
+
+#[test]
+fn lowering_colony_cap_mid_session_is_respected() {
+    // alloc_colony_id's cap check used to run ONLY when free_colony_ids was empty:
+    //   if self.free_colony_ids.is_empty() && self.colonies.len() >= cap { return None; }
+    // so any recycled id bypassed the cap entirely. That's harmless under a static cap, but
+    // P_MY_MAX_COLONIES is hot-tunable (set_param) -- lowering it mid-session while colonies
+    // churn (spawn/reap/spawn) must still be respected via the free-list path, not just the
+    // fresh-id path.
+    let mut w = World::new(128, 128);
+
+    // Keep-alive colony in rich soil, far from everything below, so it keeps at least one tip
+    // growing for the whole test. grow_mycelium (and its colonies.retain reap sweep) is a no-op
+    // whenever there are no live tips anywhere -- without this, once a/b/c's tips all died the
+    // reap sweep would never run again and free_colony_ids would never actually gain entries.
+    for x in 90..120 { w.paint(x, 111, 0, Material::Rock as u8); } // floor so soil can't avalanche away
+    for x in 90..120 { for y in 90..110 { w.paint(x as i32, y as i32, 0, Material::Soil as u8); w.set_soil_richness(x, y, 200); } }
+    w.spawn_colony(100, 95);
+
+    // Three colonies boxed solid by Rock, far apart so their boxes can't interfere with each
+    // other or with the keep-alive colony's soil patch. Each tip dies on its very first growth
+    // tick (boxed in, pick_step finds nowhere to go), leaving just a root cell.
+    let a = spawn_rock_boxed_colony(&mut w, 10, 10);
+    let b = spawn_rock_boxed_colony(&mut w, 10, 30);
+    let c = spawn_rock_boxed_colony(&mut w, 10, 50);
+
+    let interval = (w.params.values[sandgun_core::params::P_MY_GROWTH_INTERVAL] as usize).max(1);
+    for _ in 0..(3 * interval) { w.step(); }
+    assert_eq!(w.colony_tip_count(a), 0, "setup: a's tip should have died, boxed in by Rock");
+    assert_eq!(w.colony_tip_count(b), 0, "setup: b's tip should have died, boxed in by Rock");
+    assert_eq!(w.colony_tip_count(c), 0, "setup: c's tip should have died, boxed in by Rock");
+
+    // Erase each boxed colony's root cell so cell_count drops to 0 -- the last condition for
+    // the reap sweep to actually recycle their ids.
+    w.paint(10, 10, 0, Material::Sand as u8);
+    w.paint(10, 30, 0, Material::Sand as u8);
+    w.paint(10, 50, 0, Material::Sand as u8);
+    for _ in 0..(3 * interval) { w.step(); }
+    assert_eq!(w.colony_cell_count(a), 0, "setup: a should be fully cell-less");
+    assert_eq!(w.colony_cell_count(b), 0, "setup: b should be fully cell-less");
+    assert_eq!(w.colony_cell_count(c), 0, "setup: c should be fully cell-less");
+    assert_eq!(w.colony_count(), 1, "setup: only the keep-alive colony remains live -- a/b/c fully reaped, ids on the free list");
+
+    // Now lower the cap to exactly the current (live) colony count. Any further spawn must be
+    // rejected, including ones that would only pull a RECYCLED id from the free list.
+    w.set_param(sandgun_core::params::P_MY_MAX_COLONIES as u32, 1.0);
+
+    for i in 0..3 {
+        let id = w.spawn_colony(60, 10 + i * 20);
+        assert_eq!(id, 0, "spawn at the lowered cap must be rejected even via a recycled id");
+        assert_eq!(w.colony_count(), 1, "colony count must never exceed the lowered cap, even via free-list reuse");
+    }
+}
+
