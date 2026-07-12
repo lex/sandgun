@@ -5,19 +5,23 @@ import { attachGun, applyGun } from './gun.js';
 import { drawOverlay } from './overlay.js';
 import { loadParams } from './params.js';
 
-const W = 640, H = 384;
+const WORLD_W = 1024, WORLD_H = 2048;
+const VIEW_W = 640, VIEW_H = 384;
 
 const wasm = await init();
-const world = new WasmWorld(W, H);
+const world = new WasmWorld(WORLD_W, WORLD_H);
 world.generate((Math.random() * 0xFFFFFFFF) >>> 0);
 await loadParams(world);
-world.spawn_avatar(W / 2, 4);
+world.spawn_avatar(WORLD_W / 2, 4);
 
-const ctx = initGL(document.getElementById('view'), W, H);
-const input = attachInput(document.getElementById('view'), W, H);
+const view = document.getElementById('view');
+const ctx = initGL(view, WORLD_W, WORLD_H, VIEW_W, VIEW_H);
+const input = attachInput(view, VIEW_W, VIEW_H);
 input.onReloadParams = () => loadParams(world);
-const gun = attachGun(document.getElementById('view'), W, H);
+const gun = attachGun(view, VIEW_W, VIEW_H);
 const octx = document.getElementById('overlay').getContext('2d');
+
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
 // Fixed-timestep sim: step at a constant 60 Hz regardless of display refresh so
 // game speed doesn't scale with monitor Hz. Render still runs every rAF.
@@ -54,7 +58,11 @@ function frame() {
   world.render();
   // wasm memory growth invalidates old buffers — take a fresh view every frame
   const rgba = new Uint8Array(wasm.memory.buffer, world.rgba_ptr(), world.rgba_len());
-  blit(ctx, rgba);
+  const center = world.avatar_center();
+  const [ax, ay] = center ?? [WORLD_W / 2, WORLD_H / 2];
+  const camX = clamp(ax - VIEW_W / 2, 0, WORLD_W - VIEW_W);
+  const camY = clamp(ay - VIEW_H / 2, 0, WORLD_H - VIEW_H);
+  blit(ctx, rgba, Math.floor(camX), Math.floor(camY));
   fps = fps * 0.95 + (1000 / Math.max(1, dt)) * 0.05;
   drawOverlay(octx, world, wasm, input, fps, gun);
   window.sandgun.fps = fps; // measurement hook (M0 task 9 acceptance)
