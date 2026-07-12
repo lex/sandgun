@@ -49,19 +49,14 @@ fn generated_world_has_terrain_air_and_materials() {
     let mut w = World::new(256, 192);
     worldgen::generate(&mut w, 7);
     let total = w.width * w.height;
-    // M1e task 6 rebalance: Lex playtest feedback was that the old worldgen was too rock-heavy
-    // for mycelium to have anywhere to grow. The subsurface is now predominantly Soil, with Rock
-    // kept only as a structural minority (crust/cave walls + leftover chunky pockets from the
-    // soilification pass in worldgen::generate) -- the inverse of the old "mostly rock, thin soil
-    // crust" balance, hence the flipped assertions below relative to pre-M1e.
+    // Worldgen task 1 (2026-07-12): replaced the old uniform-rock-then-global-soil-CA fill
+    // (M1e task 6, which made Soil a deliberate 3x-over-Rock majority everywhere) with
+    // depth-graded biome bands -- soil-rich near the surface, rock-dominant deep (see
+    // biomes() in worldgen.rs). Soil is no longer a world-wide majority over Rock by design
+    // (the "soil > rock*3" assertion is gone), but it's still a substantial fraction overall
+    // and some structural rock must remain.
     assert!(count(&w, Material::Rock) > 200, "some structural rock should remain");
     assert!(count(&w, Material::Soil) > total / 10, "soil should be a substantial fraction of the world");
-    assert!(
-        count(&w, Material::Soil) > count(&w, Material::Rock) * 3,
-        "soil must be a clear majority over rock (soil={}, rock={})",
-        count(&w, Material::Soil),
-        count(&w, Material::Rock)
-    );
     assert!(count(&w, Material::Empty) > total / 5, "at least 20% air");
     assert!(count(&w, Material::Sand) > 50, "sand pockets present");
     assert!(count(&w, Material::Water) > 50, "water pools present");
@@ -122,50 +117,54 @@ fn generated_world_fully_settles() {
     assert_eq!(w.cells_processed, 0, "an untouched generated world must fully settle");
 }
 
-/// Count of Rock cells with zero Rock neighbors in the 8-neighborhood (a fully isolated
-/// salt-and-pepper speck sitting alone in soil).
-fn lonely_rock_speck_count(w: &World) -> usize {
-    let mut n = 0;
-    for y in 0..w.height {
-        for x in 0..w.width {
-            if w.get(x, y) != Material::Rock {
-                continue;
-            }
-            let mut neighbors = 0;
-            for dy in -1i32..=1 {
-                for dx in -1i32..=1 {
-                    if (dx, dy) == (0, 0) {
-                        continue;
-                    }
-                    let (nx, ny) = (x as i32 + dx, y as i32 + dy);
-                    if nx < 0 || ny < 0 || nx as usize >= w.width || ny as usize >= w.height {
-                        continue;
-                    }
-                    if w.get(nx as usize, ny as usize) == Material::Rock {
-                        neighbors += 1;
-                    }
-                }
-            }
-            if neighbors == 0 {
-                n += 1;
-            }
-        }
-    }
-    n
+// M1e playtest fix 5 added a `worldgen_has_no_lonely_rock_specks` test (+ helper) enforcing a
+// zero-tolerance declump pass over the whole final world. Worldgen task 1 (2026-07-12)
+// intentionally removes that global declump pass -- the brief for this task replaces it with
+// depth-graded biome bands + a local 1-2 iteration majority-smoothing CA over the fill, which
+// makes bands read as cohesive masses but does not guarantee zero fully-isolated single-cell
+// Rock specks (especially where the still-present cave carve, pass 3, can strand a cell by
+// carving out all of its neighbors). That's an accepted, deliberate trade-off for this task --
+// Task 3's set-pieces may clean up residual specks locally (e.g. soil beds), but a global
+// zero-specks guarantee is no longer a worldgen invariant. Test removed rather than weakened
+// since there's no meaningful non-zero threshold specified by the new design.
+
+// --- worldgen task 1: biome bands + depth-graded base fill ---
+
+#[test]
+fn world_has_open_sky_above_the_surface() {
+    let mut w = World::new(256, 512);
+    worldgen::generate(&mut w, 1);
+    // the very top row is open (above the surface heightline)
+    let top_empty = (0..w.width).filter(|&x| w.get(x, 0) == Material::Empty).count();
+    assert!(top_empty > w.width * 3 / 4, "top row should be mostly open sky");
 }
 
 #[test]
-fn worldgen_has_no_lonely_rock_specks() {
-    // M1e playtest fix 5: Lex's feedback was that worldgen's surviving Rock had salt-and-pepper
-    // single specks scattered through the soil, which read as noise rather than structure. A
-    // declump pass (worldgen::generate step 4b, after all terrain/material pockets are placed)
-    // erodes away any Rock cell with fewer than 2 Rock neighbors, repeated until stable, so only
-    // cohesive clumps/veins should remain -- no cell sitting completely alone. Checked across
-    // several seeds since this is about a general property of the generator, not one lucky seed.
-    for seed in [1u32, 7, 42, 99] {
-        let mut w = World::new(256, 192);
-        worldgen::generate(&mut w, seed);
-        let lonely = lonely_rock_speck_count(&w);
-        assert_eq!(lonely, 0, "seed {seed}: found {lonely} fully isolated (0-neighbor) rock specks");
-    }
+fn deeper_band_is_rockier_than_the_upper_band() {
+    // soil should dominate near the surface, rock deeper -- a depth gradient, not uniform fill.
+    let mut w = World::new(256, 512);
+    worldgen::generate(&mut w, 2);
+    let band = w.height / 4;
+    let upper_rows = band..band * 2; // upper subsurface band
+    let deep_rows = band * 3..band * 4; // deep band
+    let ratio = |rows: std::ops::Range<usize>| {
+        let (mut soil, mut rock) = (0usize, 0usize);
+        for y in rows {
+            for x in 0..w.width {
+                match w.get(x, y) {
+                    Material::Soil => soil += 1,
+                    Material::Rock => rock += 1,
+                    _ => {}
+                }
+            }
+        }
+        (soil, rock)
+    };
+    let (us, ur) = ratio(upper_rows);
+    let (ds, dr) = ratio(deep_rows);
+    // upper band is soil-leaning, deep band is rock-leaning
+    assert!(
+        us as f32 / (ur.max(1) as f32) > ds as f32 / (dr.max(1) as f32),
+        "soil:rock ratio must decrease with depth (upper {us}:{ur} vs deep {ds}:{dr})"
+    );
 }

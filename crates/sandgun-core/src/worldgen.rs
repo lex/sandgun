@@ -28,6 +28,31 @@ fn set(world: &mut World, x: usize, y: usize, m: Material, rng: &mut GenRng) {
     world.cells[i] = Cell::new(m, (rng.next() & 3) as u8);
 }
 
+/// A depth band of the subsurface: a soil/rock mix ratio (before caves) plus the initial cave
+/// open-cell density the Task 2 CA carve will use for that depth.
+struct Biome {
+    top: usize,    // inclusive world row where this band starts
+    soil_pct: u32, // 0..100 chance a filled cell is Soil vs Rock (before caves)
+    // 0..100 initial open-cell chance for the Task 2 CA carve; not read yet -- the existing
+    // pass-3 cave carve still uses its own fixed 45% until Task 2 wires it per-band.
+    #[allow(dead_code)]
+    cave_seed_pct: u32,
+}
+
+/// Partition [surface .. h) into depth bands: a soil-rich crust zone near the top grading to
+/// rock-dominant depths. Boundaries scale with world height so it works at any size.
+fn biomes(h: usize) -> Vec<Biome> {
+    vec![
+        Biome { top: 0, soil_pct: 78, cave_seed_pct: 42 },        // upper: soft, soil-rich
+        Biome { top: h * 2 / 5, soil_pct: 45, cave_seed_pct: 46 }, // mid: mixed
+        Biome { top: h * 7 / 10, soil_pct: 20, cave_seed_pct: 40 }, // deep: rock-dominant
+    ]
+}
+
+fn biome_at<'a>(bands: &'a [Biome], y: usize) -> &'a Biome {
+    bands.iter().rev().find(|b| y >= b.top).unwrap_or(&bands[0])
+}
+
 fn blob(world: &mut World, rng: &mut GenRng, cx: i32, cy: i32, radius: i32, m: Material) {
     for dy in -radius..=radius {
         for dx in -radius..=radius {
@@ -63,10 +88,47 @@ pub fn generate(world: &mut World, seed: u32) {
         }
     }
 
-    // 2. rock below the surface
+    // 2. depth-graded base fill: soil-rich near the surface grading to rock-dominant deep, via
+    // per-band per-cell rolls (replaces the old uniform-rock-then-global-soil-CA passes). Caves
+    // are carved into this fill below (pass 3); soil beds/liquid pools are set-pieces for Task 3.
+    let bands = biomes(h);
+    let mut soil_mask = vec![false; w * h];
     for x in 0..w {
         for yy in surface[x] as usize..h {
-            set(world, x, yy, Material::Rock, &mut rng);
+            let band = biome_at(&bands, yy);
+            soil_mask[yy * w + x] = rng.chance(band.soil_pct, 100);
+        }
+    }
+    // 2b. majority-smoothing: 2 passes of the standard "majority of 8 neighbors wins, ties keep
+    // the current state" rule kill salt-and-pepper noise so each band reads as a cohesive soil or
+    // rock mass rather than a checkerboard. Only touches cells at/below the surface line so the
+    // open sky above is untouched.
+    for _ in 0..2 {
+        let prev = soil_mask.clone();
+        for x in 1..w - 1 {
+            for yy in 1..h - 1 {
+                if (yy as i32) < surface[x] {
+                    continue;
+                }
+                let mut n = 0;
+                for dy in -1i32..=1 {
+                    for dx in -1i32..=1 {
+                        if (dx, dy) == (0, 0) {
+                            continue;
+                        }
+                        if prev[((yy as i32 + dy) as usize) * w + (x as i32 + dx) as usize] {
+                            n += 1;
+                        }
+                    }
+                }
+                soil_mask[yy * w + x] = if n == 4 { prev[yy * w + x] } else { n > 4 };
+            }
+        }
+    }
+    for x in 0..w {
+        for yy in surface[x] as usize..h {
+            let m = if soil_mask[yy * w + x] { Material::Soil } else { Material::Rock };
+            set(world, x, yy, m, &mut rng);
         }
     }
 
@@ -109,66 +171,7 @@ pub fn generate(world: &mut World, seed: u32) {
         }
     }
 
-    // 3b. soil crust: the top skin of remaining rock becomes colonizable soil
-    for x in 0..w {
-        let depth = 6 + (rng.next() % 5) as usize;
-        for d in 0..depth {
-            let yy = surface[x] as usize + d;
-            if yy < h && world.get(x, yy) == Material::Rock {
-                set(world, x, yy, Material::Soil, &mut rng);
-            }
-        }
-    }
-
-    // 3c. deep soil: playtest feedback was that the subsurface was too rock-heavy for mycelium
-    // to have anywhere to grow. Below the crust, most of the remaining Rock becomes Soil too --
-    // rock stays only as a structural MINORITY (smoothed chunky regions/veins, not a solid wall).
-    // A biased cellular automaton (same technique as the cave carve above, but seeded soil-heavy
-    // and biased to keep growing) turns salt-and-pepper noise into coherent soil masses with rock
-    // remnants, rather than a checkerboard. Caves (already carved to Empty above) are untouched --
-    // this pass only ever touches cells that are still Rock, so it can't fill in or block a cave.
-    let mut soil_mask = vec![false; w * h];
-    for x in 0..w {
-        for yy in 0..h {
-            if world.get(x, yy) == Material::Rock {
-                soil_mask[yy * w + x] = rng.chance(72, 100);
-            }
-        }
-    }
-    for _ in 0..3 {
-        let prev = soil_mask.clone();
-        for x in 1..w - 1 {
-            for yy in 1..h - 1 {
-                if world.get(x, yy) != Material::Rock {
-                    continue; // only rock cells are candidates; soil/empty/etc are untouched
-                }
-                let mut n = 0;
-                for dy in -1i32..=1 {
-                    for dx in -1i32..=1 {
-                        if (dx, dy) == (0, 0) {
-                            continue;
-                        }
-                        if prev[((yy as i32 + dy) as usize) * w + (x as i32 + dx) as usize] {
-                            n += 1;
-                        }
-                    }
-                }
-                // Biased toward soil (stays soil on a bare majority, converts on a supermajority)
-                // so rock survives only in the thicker/more isolated pockets -- a minority,
-                // structural material rather than the default fill.
-                soil_mask[yy * w + x] = if prev[yy * w + x] { n >= 3 } else { n >= 5 };
-            }
-        }
-    }
-    for x in 0..w {
-        for yy in 0..h {
-            if soil_mask[yy * w + x] && world.get(x, yy) == Material::Rock {
-                set(world, x, yy, Material::Soil, &mut rng);
-            }
-        }
-    }
-
-    // 3d. spore pockets: gas blobs in cave air; they rise and pool by themselves
+    // 3b. spore pockets: gas blobs in cave air; they rise and pool by themselves
     let mut placed_spores = 0;
     for _ in 0..3000 {
         if placed_spores >= (w / 20).max(5) {
@@ -212,59 +215,6 @@ pub fn generate(world: &mut World, seed: u32) {
             let r = rng.range(2, 4);
             blob(world, &mut rng, x, yy, r, Material::Oil);
             placed_oil += 1;
-        }
-    }
-
-    // 4b. declump: playtest feedback was that surviving Rock had salt-and-pepper single specks
-    // scattered through the soil, which reads as noise rather than structure. Repeatedly convert
-    // any Rock cell with fewer than 2 Rock neighbors (8-neighborhood) to Soil -- this erodes away
-    // truly lonely specks (0 neighbors) and near-lonely noise (1 neighbor) while leaving cohesive
-    // rock clumps/veins (which have several neighbors along their body) intact. A stricter cutoff
-    // (e.g. <4) cascades: each pass thins every cluster's edge, which drops previously-safe edge
-    // cells below the threshold too, so repeated passes eat through structural rock almost
-    // entirely rather than just the noise. Only ever touches cells that are still Rock and only
-    // ever turns them into Soil, so caves (already Empty) are never affected. Runs AFTER the
-    // material pockets above (step 4): those sand dune blobs paint unconditionally (no
-    // Material::Empty guard, unlike the water/oil/spore pockets), so a dune straddling the
-    // surface can carve into existing Rock and leave a fresh isolated cell behind -- declumping
-    // before that point would miss it. The richness bake below (step 6) runs after this and
-    // scans for whatever is Soil at that point, so newly-converted cells get richness too.
-    // Repeats until stable (a fixed small count can leave a straggler: eroding one cell can drop
-    // a neighbor below the threshold too, and that chain occasionally needs a few more passes
-    // than "2-3" to fully settle) -- each pass strictly shrinks the Rock count, so this always
-    // terminates; the cap is just a generous safety bound, never expected to bind in practice.
-    for _ in 0..20 {
-        let mut to_soil: Vec<(usize, usize)> = Vec::new();
-        for x in 0..w {
-            for yy in 0..h {
-                if world.get(x, yy) != Material::Rock {
-                    continue;
-                }
-                let mut n = 0;
-                for dy in -1i32..=1 {
-                    for dx in -1i32..=1 {
-                        if (dx, dy) == (0, 0) {
-                            continue;
-                        }
-                        let (nx, ny) = (x as i32 + dx, yy as i32 + dy);
-                        if nx < 0 || ny < 0 || nx as usize >= w || ny as usize >= h {
-                            continue;
-                        }
-                        if world.get(nx as usize, ny as usize) == Material::Rock {
-                            n += 1;
-                        }
-                    }
-                }
-                if n < 2 {
-                    to_soil.push((x, yy));
-                }
-            }
-        }
-        if to_soil.is_empty() {
-            break;
-        }
-        for (x, yy) in to_soil {
-            set(world, x, yy, Material::Soil, &mut rng);
         }
     }
 
