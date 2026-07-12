@@ -4,6 +4,7 @@ import { attachInput, applyInput } from './input.js';
 import { attachGun, applyGun } from './gun.js';
 import { drawOverlay } from './overlay.js';
 import { loadParams } from './params.js';
+import { makeCamera } from './camera.js';
 
 const WORLD_W = 1024, WORLD_H = 2048;
 const VIEW_W = 640, VIEW_H = 384;
@@ -14,14 +15,13 @@ world.generate((Math.random() * 0xFFFFFFFF) >>> 0);
 await loadParams(world);
 world.spawn_avatar(WORLD_W / 2, 4);
 
+const cam = makeCamera(VIEW_W, VIEW_H, WORLD_W, WORLD_H);
 const view = document.getElementById('view');
 const ctx = initGL(view, WORLD_W, WORLD_H, VIEW_W, VIEW_H);
-const input = attachInput(view, VIEW_W, VIEW_H);
+const input = attachInput(view, VIEW_W, VIEW_H, cam);
 input.onReloadParams = () => loadParams(world);
-const gun = attachGun(view, VIEW_W, VIEW_H);
+const gun = attachGun(view, VIEW_W, VIEW_H, cam);
 const octx = document.getElementById('overlay').getContext('2d');
-
-const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
 // Fixed-timestep sim: step at a constant 60 Hz regardless of display refresh so
 // game speed doesn't scale with monitor Hz. Render still runs every rAF.
@@ -29,7 +29,7 @@ const TICK_HZ = 60;
 const TICK_MS = 1000 / TICK_HZ;
 const MAX_STEPS = 4; // backlog cap — drop excess to avoid a spiral of death after a stall
 let fps = 60, last = performance.now(), acc = 0;
-window.sandgun = { world, wasm, input, gun }; // console poking
+window.sandgun = { world, wasm, input, gun, cam }; // console poking
 
 // One simulation tick: latest avatar/gun intent, then advance the world.
 function stepOnce() {
@@ -58,13 +58,11 @@ function frame() {
   world.render();
   // wasm memory growth invalidates old buffers — take a fresh view every frame
   const rgba = new Uint8Array(wasm.memory.buffer, world.rgba_ptr(), world.rgba_len());
-  const center = world.avatar_center();
-  const [ax, ay] = center ?? [WORLD_W / 2, WORLD_H / 2];
-  const camX = clamp(ax - VIEW_W / 2, 0, WORLD_W - VIEW_W);
-  const camY = clamp(ay - VIEW_H / 2, 0, WORLD_H - VIEW_H);
-  blit(ctx, rgba, Math.floor(camX), Math.floor(camY));
+  const c = world.avatar_center();
+  if (c) cam.update(c[0], c[1]);
+  blit(ctx, rgba, Math.floor(cam.x), Math.floor(cam.y));
   fps = fps * 0.95 + (1000 / Math.max(1, dt)) * 0.05;
-  drawOverlay(octx, world, wasm, input, fps, gun);
+  drawOverlay(octx, world, wasm, input, fps, gun, cam);
   window.sandgun.fps = fps; // measurement hook (M0 task 9 acceptance)
   requestAnimationFrame(frame);
 }
