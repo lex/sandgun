@@ -41,7 +41,7 @@ function drawEntities(octx, world, cam) {
   }
 }
 
-export function drawOverlay(octx, world, wasm, input, fps, gun, cam) {
+export function drawOverlay(octx, world, wasm, input, fps, gun, cam, uploaded) {
   const { width: w, height: h } = octx.canvas;
   octx.clearRect(0, 0, w, h);
   octx.font = '10px monospace';
@@ -52,6 +52,12 @@ export function drawOverlay(octx, world, wasm, input, fps, gun, cam) {
     growth = ` · colonies ${world.colony_count()} · tips ${world.tip_count()} · mush ${world.mushroom_count()} · pool ${world.max_colony_pool()}`;
   }
   octx.fillText(`${fps.toFixed(0)} fps · ${rate} · ${input.status}${gun ? ` · ${gun.status}` : ''}${input.debug ? ` · ${world.cells_processed()} cells${growth}` : ''}`, 6, 12);
+  // M1d task 4: render-cost HUD -- the kill-criterion numbers (uploaded chunks this frame,
+  // camera top-left) on their own line, behind the same `g` debug toggle.
+  if (input.debug) {
+    const camX = cam?.x ?? 0, camY = cam?.y ?? 0;
+    octx.fillText(`render: ${uploaded ?? 0} chunks uploaded · cam (${camX.toFixed(0)}, ${camY.toFixed(0)})`, 6, 24);
+  }
   drawEntities(octx, world, cam);
   if (!input.debug) return;
   const active = new Uint8Array(wasm.memory.buffer, world.active_ptr(), world.active_len());

@@ -65,7 +65,7 @@ function frame() {
   if (c) cam.update(c[0], c[1]);
   drawCamera(ctx, Math.floor(cam.x), Math.floor(cam.y)); // camera pan alone uploads nothing
   fps = fps * 0.95 + (1000 / Math.max(1, dt)) * 0.05;
-  drawOverlay(octx, world, wasm, input, fps, gun, cam);
+  drawOverlay(octx, world, wasm, input, fps, gun, cam, uploaded);
   window.sandgun.fps = fps; // measurement hook (M0 task 9 acceptance)
   window.sandgun.uploadedChunks = uploaded; // measurement hook (M1d task 3/4: dirty-chunk count)
   requestAnimationFrame(frame);
