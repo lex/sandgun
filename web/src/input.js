@@ -8,17 +8,19 @@ const KEYS = {
 const NAMES = ['erase', 'rock', 'sand', 'water', 'oil', 'soil', 'mycelium',
   'flesh', 'spores', 'smoke', 'ash', 'acid', 'FIRE'];
 
-export function attachInput(canvas, worldW, worldH) {
+export function attachInput(canvas, worldW, worldH, cam) {
   const input = {
     down: false, x: 0, y: 0, px: null, py: null,
     material: M.SAND, radius: 4, debug: false, regen: false, reloadParams: false,
     left: false, right: false, jump: false, capTicks: true,
     get status() { return `${NAMES[this.material]} r${this.radius}`; },
   };
+  // cam.x/cam.y are the world-cell top-left of the visible window; adding them maps a
+  // screen point to the correct world cell regardless of camera scroll.
   const toWorld = (e) => {
     const r = canvas.getBoundingClientRect();
-    input.x = Math.floor((e.clientX - r.left) / r.width * worldW);
-    input.y = Math.floor((e.clientY - r.top) / r.height * worldH);
+    input.x = Math.floor((e.clientX - r.left) / r.width * worldW + cam.x);
+    input.y = Math.floor((e.clientY - r.top) / r.height * worldH + cam.y);
   };
   canvas.addEventListener('pointerdown', (e) => { if (e.button === 2) { input.down = true; toWorld(e); } });
   window.addEventListener('pointerup', () => { input.down = false; input.px = input.py = null; });

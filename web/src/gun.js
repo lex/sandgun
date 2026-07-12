@@ -3,15 +3,17 @@ const AMMO_NAMES = ['kinetic', 'incendiary', 'acid', 'spore'];
 const GUN_SPEED = 10;
 const FIRE_COOLDOWN = 6; // frames
 
-export function attachGun(canvas, worldW, worldH) {
+export function attachGun(canvas, worldW, worldH, cam) {
   const gun = {
     ammo: 0, aimX: worldW / 2, aimY: 0, firing: false, cooldown: 0,
     get status() { return `gun: ${AMMO_NAMES[this.ammo]}`; },
   };
+  // cam.x/cam.y are the world-cell top-left of the visible window; adding them maps the
+  // cursor to the correct world cell regardless of camera scroll.
   const toWorld = (e) => {
     const r = canvas.getBoundingClientRect();
-    gun.aimX = (e.clientX - r.left) / r.width * worldW;
-    gun.aimY = (e.clientY - r.top) / r.height * worldH;
+    gun.aimX = (e.clientX - r.left) / r.width * worldW + cam.x;
+    gun.aimY = (e.clientY - r.top) / r.height * worldH + cam.y;
   };
   canvas.addEventListener('mousemove', toWorld);
   canvas.addEventListener('mousedown', (e) => { if (e.button === 0) { gun.firing = true; toWorld(e); } });

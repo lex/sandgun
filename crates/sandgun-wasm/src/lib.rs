@@ -39,8 +39,14 @@ impl WasmWorld {
     pub fn projectile_count(&self) -> usize {
         self.inner.projectile_count()
     }
+    pub fn projectiles_xy(&self) -> Vec<f32> {
+        self.inner.projectiles_xy()
+    }
     pub fn particle_count(&self) -> usize {
         self.inner.particle_count()
+    }
+    pub fn particles_xy(&self) -> Vec<f32> {
+        self.inner.particles_xy()
     }
     pub fn render(&mut self) {
         self.inner.render_rgba();
@@ -56,6 +62,18 @@ impl WasmWorld {
     }
     pub fn active_len(&self) -> usize {
         self.inner.active_len()
+    }
+    pub fn render_dirty_ptr(&self) -> *const u8 {
+        self.inner.render_dirty_ptr()
+    }
+    pub fn render_dirty_len(&self) -> usize {
+        self.inner.render_dirty_len()
+    }
+    pub fn mark_all_render_dirty(&mut self) {
+        self.inner.mark_all_render_dirty();
+    }
+    pub fn clear_render_dirty(&mut self) {
+        self.inner.clear_render_dirty();
     }
     pub fn chunks_x(&self) -> usize {
         self.inner.chunks_x()

@@ -240,3 +240,63 @@ fn displaced_liquid_rises_at_most_one_cell_per_frame() {
         top_water(&w)
     );
 }
+
+// --- M1d task 3: dirty-chunk GPU upload -------------------------------------------------
+
+#[test]
+fn render_dirty_starts_all_dirty_then_clears() {
+    let mut w = World::new(128, 64); // 2x1 chunks
+    assert!(w.render_dirty().iter().all(|&b| b == 1), "fresh world must upload once, in full");
+    w.clear_render_dirty();
+    assert!(w.render_dirty().iter().all(|&b| b == 0));
+}
+
+#[test]
+fn render_dirty_set_on_mutation() {
+    let mut w = World::new(128, 64); // chunk 0: x in [0,64); chunk 1: x in [64,128)
+    w.clear_render_dirty();
+    assert_eq!(w.render_dirty(), &[0, 0]);
+    w.paint(10, 10, 0, Material::Sand as u8); // touches only chunk 0
+    assert_eq!(w.render_dirty(), &[1, 0], "painting a cell must dirty only its own chunk");
+}
+
+#[test]
+fn settled_world_has_no_render_dirty_after_clear() {
+    let mut w = World::new(128, 64);
+    w.clear_render_dirty();
+    w.step(); // nothing active on a freshly-constructed, unwoken world
+    assert!(
+        w.render_dirty().iter().all(|&b| b == 0),
+        "a settled world with nothing moving must not re-dirty any chunk"
+    );
+}
+
+#[test]
+fn render_rgba_only_touches_dirty_chunks() {
+    let mut w = World::new(128, 64); // 2 chunks side by side
+    w.render_rgba(); // first render: everything starts dirty
+    w.clear_render_dirty();
+    let before = w.rgba().to_vec();
+
+    // Change chunk 0's material WITHOUT waking it (so render_dirty[chunk 0] stays 0) --
+    // simulates "chunk 0 wasn't touched this frame" while giving render_rgba something wrong
+    // to (incorrectly) pick up if it ignored the dirty bitmap.
+    w.test_set_material_no_wake(10, 10, Material::Sand as u8);
+    // Chunk 1 is mutated normally (paint wakes + dirties it).
+    w.paint(70, 10, 0, Material::Water as u8);
+
+    w.render_rgba();
+    let after = w.rgba();
+
+    let o0 = (10 * 128 + 10) * 4;
+    assert_eq!(
+        &after[o0..o0 + 4],
+        &before[o0..o0 + 4],
+        "render_rgba must not touch a chunk that isn't render-dirty"
+    );
+
+    let o1 = (10 * 128 + 70) * 4;
+    assert!((after[o1] as i16 - 64).abs() <= 9, "dirty chunk 1 must reflect the new Water paint");
+    assert!((after[o1 + 1] as i16 - 120).abs() <= 9);
+    assert!((after[o1 + 2] as i16 - 220).abs() <= 9);
+}
