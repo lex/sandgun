@@ -60,16 +60,23 @@ fn particles_do_not_keep_the_world_awake_forever() {
 }
 
 #[test]
-fn render_stamps_a_flying_particle_into_the_buffer() {
+fn particles_xy_reports_position_and_material_for_the_js_overlay() {
+    // M1d task 3: entities are drawn as a JS overlay, not stamped into the persistent RGBA
+    // texture -- particles_xy() is the read-only accessor the overlay pulls from each frame.
     let mut w = World::new(64, 64);
-    // a particle mid-air over empty space
+    w.spawn_particle(10.0, 10.5, 1.0, -2.0, Material::Sand as u8);
+    assert_eq!(w.particles_xy(), vec![10.0, 10.5, Material::Sand as u8 as f32]);
+}
+
+#[test]
+fn render_rgba_no_longer_stamps_a_flying_particle() {
+    // A particle stamped into the persistent buffer would leave a trail once it moves on
+    // (its vacated chunk is never re-dirtied by the particle itself) -- so render_rgba must
+    // leave the grid's own render untouched by particles; the overlay draws them instead.
+    let mut w = World::new(64, 64);
     w.spawn_particle(10.0, 10.0, 0.0, 0.0, Material::Sand as u8);
     w.render_rgba();
     let px = w.rgba();
     let o = (10 * 64 + 10) * 4;
-    // empty background is [26,24,32]; a stamped sand particle must differ
-    assert!(
-        px[o] != 26 || px[o + 1] != 24 || px[o + 2] != 32,
-        "a flying particle must be drawn into the render buffer"
-    );
+    assert_eq!(&px[o..o + 4], &[26, 24, 32, 255], "an in-flight particle must not be stamped into the grid buffer");
 }

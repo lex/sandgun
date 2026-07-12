@@ -1,5 +1,5 @@
 import init, { WasmWorld } from './pkg/sandgun_wasm.js';
-import { initGL, blit } from './renderer.js';
+import { initGL, uploadDirtyChunks, drawCamera } from './renderer.js';
 import { attachInput, applyInput } from './input.js';
 import { attachGun, applyGun } from './gun.js';
 import { drawOverlay } from './overlay.js';
@@ -55,15 +55,19 @@ function frame() {
     acc = 0;
   }
 
-  world.render();
-  // wasm memory growth invalidates old buffers — take a fresh view every frame
+  world.render(); // core rewrites RGBA only for chunks it marked render-dirty (M1d task 3)
+  // wasm memory growth invalidates old buffers — take fresh views every frame
   const rgba = new Uint8Array(wasm.memory.buffer, world.rgba_ptr(), world.rgba_len());
+  const dirty = new Uint8Array(wasm.memory.buffer, world.render_dirty_ptr(), world.render_dirty_len());
+  const uploaded = uploadDirtyChunks(ctx, rgba, dirty); // settled world uploads ~zero chunks
+  world.clear_render_dirty();
   const c = world.avatar_center();
   if (c) cam.update(c[0], c[1]);
-  blit(ctx, rgba, Math.floor(cam.x), Math.floor(cam.y));
+  drawCamera(ctx, Math.floor(cam.x), Math.floor(cam.y)); // camera pan alone uploads nothing
   fps = fps * 0.95 + (1000 / Math.max(1, dt)) * 0.05;
   drawOverlay(octx, world, wasm, input, fps, gun, cam);
   window.sandgun.fps = fps; // measurement hook (M0 task 9 acceptance)
+  window.sandgun.uploadedChunks = uploaded; // measurement hook (M1d task 3/4: dirty-chunk count)
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);

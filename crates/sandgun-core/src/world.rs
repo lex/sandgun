@@ -38,6 +38,13 @@ pub struct World {
     pub(crate) frame: u64,
     pub(crate) rng: u32,
     pub(crate) rgba: Vec<u8>,
+    /// Per-chunk "needs re-upload to the GPU" bitmap (M1d task 3). Set whenever `wake()` fires
+    /// (the single choke-point every cell mutation already calls) so it piggybacks the exact
+    /// same set of chunks that changed, without a second sweep. `render_rgba` only rewrites the
+    /// RGBA bytes for chunks with `render_dirty[chunk] == 1`; the renderer only re-uploads those
+    /// chunks' sub-rects to the GPU texture, then clears the bitmap. A settled, offscreen world
+    /// wakes no chunks, so this stays all-zero and costs ~nothing to render or upload.
+    pub(crate) render_dirty: Vec<u8>,
     /// Cells visited by the last step(); test + debug hook for chunk skipping.
     pub cells_processed: u64,
     pub params: Params,
@@ -85,6 +92,9 @@ impl World {
             frame: 0,
             rng: 0x9E37_79B9,
             rgba: vec![0; width * height * 4],
+            // All-dirty on construction: the very first frame has no prior GPU texture content,
+            // so everything must upload once.
+            render_dirty: vec![1; chunks_x * chunks_y],
             cells_processed: 0,
             params: Params::default(),
             particles: Vec::new(),
@@ -137,6 +147,8 @@ impl World {
         self.tips.clear();
         self.free_colony_ids.clear();
         self.pending_drop_checks.clear();
+        // The whole grid just changed under the GPU texture's feet -- force a full re-upload.
+        self.mark_all_render_dirty();
     }
 
     /// Wake every chunk for the next step (used after worldgen).
@@ -183,6 +195,11 @@ impl World {
                 self.active_next[ci] = 1;
             }
         }
+        // Render-dirty only needs the mutated cell's OWN chunk (unlike sim wake above, which
+        // also wakes neighbors so their next step sees a fresh neighborhood) -- the pixel that
+        // actually changed lives in exactly one chunk's sub-rect of the RGBA buffer/texture.
+        let ci = (y / CHUNK) * self.chunks_x + (x / CHUNK);
+        self.render_dirty[ci] = 1;
     }
 
     /// Set a tunable param by index (used by tests and the wasm bridge). Out-of-range indices are ignored.
@@ -1101,59 +1118,37 @@ impl World {
         self.chunks_y
     }
 
+    /// Rewrite the RGBA buffer, but ONLY for chunks flagged in `render_dirty` (M1d task 3) --
+    /// a settled, un-woken world touches nothing here. The buffer is persistent across frames
+    /// (untouched chunks keep last frame's bytes), which is exactly why entities can no longer
+    /// be stamped in here: a moving particle/projectile/avatar would leave a trail in whatever
+    /// chunk it vacates, since that chunk is never marked dirty by the entity's movement alone.
+    /// Entities are drawn fresh every frame instead, as a JS-side overlay pass over this texture.
     pub fn render_rgba(&mut self) {
-        for (i, cell) in self.cells.iter().enumerate() {
-            let burning = cell.flags & FLAG_BURNING != 0;
-            let mat = Material::from_u8(cell.material);
-            let (base, j) = if burning || mat == Material::Fire {
-                // animate between deep orange and yellow using the countdown for flicker
-                let hot = (cell.aux & 7) as i16 * 10;
-                ([255u8, (150 + hot.min(70)) as u8, 40u8], 0i16)
-            } else {
-                let j = if mat == Material::Empty { 0 } else { (cell.shade & 3) as i16 * 6 - 9 };
-                (mat.base_color(), j)
-            };
-            let o = i * 4;
-            self.rgba[o] = (base[0] as i16 + j).clamp(0, 255) as u8;
-            self.rgba[o + 1] = (base[1] as i16 + j).clamp(0, 255) as u8;
-            self.rgba[o + 2] = (base[2] as i16 + j).clamp(0, 255) as u8;
-            self.rgba[o + 3] = 255;
-        }
-
-        // stamp particles (their material color) and projectiles (hot tracer) over the grid
-        for p in &self.particles {
-            let (cx, cy) = (p.x.floor() as isize, p.y.floor() as isize);
-            if self.in_bounds(cx, cy) {
-                let [r, g, b] = Material::from_u8(p.material).base_color();
-                let o = (cy as usize * self.width + cx as usize) * 4;
-                self.rgba[o] = r;
-                self.rgba[o + 1] = g;
-                self.rgba[o + 2] = b;
-                self.rgba[o + 3] = 255;
-            }
-        }
-        for p in &self.projectiles {
-            let (cx, cy) = (p.x.floor() as isize, p.y.floor() as isize);
-            if self.in_bounds(cx, cy) {
-                let o = (cy as usize * self.width + cx as usize) * 4;
-                self.rgba[o] = 255;
-                self.rgba[o + 1] = 240;
-                self.rgba[o + 2] = 200;
-                self.rgba[o + 3] = 255;
-            }
-        }
-
-        // stamp the avatar as a distinct sprite-ish block, after particles/projectiles
-        if let Some(a) = self.avatar {
-            let (x0, y0) = (a.x.floor() as isize, a.y.floor() as isize);
-            for dy in 0..a.h {
-                for dx in 0..a.w {
-                    let (cx, cy) = (x0 + dx as isize, y0 + dy as isize);
-                    if self.in_bounds(cx, cy) {
-                        let o = (cy as usize * self.width + cx as usize) * 4;
-                        self.rgba[o] = 90;
-                        self.rgba[o + 1] = 220;
-                        self.rgba[o + 2] = 240;
+        for cy in 0..self.chunks_y {
+            for cx in 0..self.chunks_x {
+                if self.render_dirty[cy * self.chunks_x + cx] == 0 {
+                    continue;
+                }
+                let (x0, y0) = (cx * CHUNK, cy * CHUNK);
+                for y in y0..(y0 + CHUNK) {
+                    for x in x0..(x0 + CHUNK) {
+                        let i = self.idx(x, y);
+                        let cell = self.cells[i];
+                        let burning = cell.flags & FLAG_BURNING != 0;
+                        let mat = Material::from_u8(cell.material);
+                        let (base, j) = if burning || mat == Material::Fire {
+                            // animate between deep orange and yellow using the countdown for flicker
+                            let hot = (cell.aux & 7) as i16 * 10;
+                            ([255u8, (150 + hot.min(70)) as u8, 40u8], 0i16)
+                        } else {
+                            let j = if mat == Material::Empty { 0 } else { (cell.shade & 3) as i16 * 6 - 9 };
+                            (mat.base_color(), j)
+                        };
+                        let o = i * 4;
+                        self.rgba[o] = (base[0] as i16 + j).clamp(0, 255) as u8;
+                        self.rgba[o + 1] = (base[1] as i16 + j).clamp(0, 255) as u8;
+                        self.rgba[o + 2] = (base[2] as i16 + j).clamp(0, 255) as u8;
                         self.rgba[o + 3] = 255;
                     }
                 }
@@ -1167,5 +1162,55 @@ impl World {
 
     pub fn rgba_ptr(&self) -> *const u8 {
         self.rgba.as_ptr()
+    }
+
+    /// Per-chunk render-dirty bitmap (test accessor; the wasm bridge uses render_dirty_ptr/len
+    /// for a zero-copy view instead).
+    pub fn render_dirty(&self) -> &[u8] {
+        &self.render_dirty
+    }
+
+    pub fn render_dirty_ptr(&self) -> *const u8 {
+        self.render_dirty.as_ptr()
+    }
+
+    pub fn render_dirty_len(&self) -> usize {
+        self.render_dirty.len()
+    }
+
+    /// Mark every chunk render-dirty (first frame, or after generate()/clear() replace the
+    /// whole grid out from under the persistent GPU texture).
+    pub fn mark_all_render_dirty(&mut self) {
+        self.render_dirty.fill(1);
+    }
+
+    /// Clear the render-dirty bitmap; called by the renderer once it has uploaded every chunk
+    /// this bitmap flagged.
+    pub fn clear_render_dirty(&mut self) {
+        self.render_dirty.fill(0);
+    }
+
+    /// Flat [x0,y0,m0, x1,y1,m1, ...] world coords + material (as f32) of live particles, for
+    /// the JS overlay pass (particles are no longer stamped into the persistent RGBA texture --
+    /// see render_rgba's doc comment).
+    pub fn particles_xy(&self) -> Vec<f32> {
+        let mut v = Vec::with_capacity(self.particles.len() * 3);
+        for p in &self.particles {
+            v.push(p.x);
+            v.push(p.y);
+            v.push(p.material as f32);
+        }
+        v
+    }
+
+    /// Test hook: overwrite a cell's material directly, bypassing `wake()` -- and therefore
+    /// `render_dirty`. Every real mutation path goes through `wake()`, so this is the only way
+    /// to construct "the material changed but its chunk was never marked render-dirty",
+    /// which is what `render_rgba_only_touches_dirty_chunks` needs to prove the skip actually
+    /// skips (a real paint would just re-dirty the very chunk we're trying to hold stale).
+    #[doc(hidden)]
+    pub fn test_set_material_no_wake(&mut self, x: usize, y: usize, material: u8) {
+        let i = self.idx(x, y);
+        self.cells[i] = Cell::new(Material::from_u8(material), 0);
     }
 }

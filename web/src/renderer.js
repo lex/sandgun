@@ -22,6 +22,9 @@ in vec2 v_uv;
 out vec4 outColor;
 void main() { outColor = texture(u_tex, v_uv); }`;
 
+// Chunk size in world cells -- must match sandgun-core's `world::CHUNK`.
+const CHUNK = 64;
+
 function compile(gl, type, src) {
   const s = gl.createShader(type);
   gl.shaderSource(s, src);
@@ -52,12 +55,45 @@ export function initGL(canvas, worldW, worldH, viewW, viewH) {
   gl.viewport(0, 0, viewW, viewH);
   const uvOffsetLoc = gl.getUniformLocation(prog, 'u_uvOffset');
   const uvScaleLoc = gl.getUniformLocation(prog, 'u_uvScale');
-  return { gl, worldW, worldH, viewW, viewH, uvOffsetLoc, uvScaleLoc };
+  const chunksX = Math.ceil(worldW / CHUNK);
+  const chunksY = Math.ceil(worldH / CHUNK);
+  return { gl, tex, worldW, worldH, viewW, viewH, chunksX, chunksY, uvOffsetLoc, uvScaleLoc };
 }
 
-export function blit(ctx, rgbaBytes, camX, camY) {
+// Upload only the chunks flagged dirty in `dirty` (a Uint8Array, one byte per chunk, row-major
+// over chunksX*chunksY) to their 64x64 sub-rects of the world texture, reading straight out of
+// the full persistent `rgbaBytes` buffer via WebGL2's UNPACK_ROW_LENGTH/SKIP_PIXELS/SKIP_ROWS --
+// no per-chunk copy needed. A settled world (dirty all-zero) uploads nothing. Returns the
+// number of chunks uploaded (handy for a HUD counter).
+export function uploadDirtyChunks(ctx, rgbaBytes, dirty) {
+  const { gl, tex, worldW, worldH, chunksX, chunksY } = ctx;
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.pixelStorei(gl.UNPACK_ROW_LENGTH, worldW);
+  let uploaded = 0;
+  for (let cy = 0; cy < chunksY; cy++) {
+    const y0 = cy * CHUNK;
+    const h = Math.min(CHUNK, worldH - y0);
+    for (let cx = 0; cx < chunksX; cx++) {
+      if (!dirty[cy * chunksX + cx]) continue;
+      const x0 = cx * CHUNK;
+      const w = Math.min(CHUNK, worldW - x0);
+      gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, x0);
+      gl.pixelStorei(gl.UNPACK_SKIP_ROWS, y0);
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, x0, y0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, rgbaBytes);
+      uploaded++;
+    }
+  }
+  // Reset unpack state -- other texture uploads (or a future caller) must not inherit it.
+  gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0);
+  gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, 0);
+  gl.pixelStorei(gl.UNPACK_SKIP_ROWS, 0);
+  return uploaded;
+}
+
+// Draw the camera window (the visible [camX,camX+viewW]x[camY,camY+viewH] slice of the world
+// texture) -- no upload here; call uploadDirtyChunks first.
+export function drawCamera(ctx, camX, camY) {
   const { gl, worldW, worldH, viewW, viewH, uvOffsetLoc, uvScaleLoc } = ctx;
-  gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, worldW, worldH, gl.RGBA, gl.UNSIGNED_BYTE, rgbaBytes);
   gl.uniform2f(uvScaleLoc, viewW / worldW, viewH / worldH);
   gl.uniform2f(uvOffsetLoc, camX / worldW, camY / worldH);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
