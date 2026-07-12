@@ -168,3 +168,50 @@ fn deeper_band_is_rockier_than_the_upper_band() {
         "soil:rock ratio must decrease with depth (upper {us}:{ur} vs deep {ds}:{dr})"
     );
 }
+
+// --- worldgen task 2: connected caverns + guaranteed descendable path ---
+
+// A path of Empty cells connects the top surface to the bottom of the world (you can descend).
+fn descendable(w: &World) -> bool {
+    use std::collections::VecDeque;
+    let (wd, ht) = (w.width, w.height);
+    let mut seen = vec![false; wd * ht];
+    let mut q = VecDeque::new();
+    // seed from every Empty cell in the top row (open sky)
+    for x in 0..wd {
+        if w.get(x, 0) == Material::Empty {
+            seen[x] = true;
+            q.push_back((x, 0));
+        }
+    }
+    while let Some((x, y)) = q.pop_front() {
+        if y == ht - 1 {
+            return true; // reached the bottom
+        }
+        for (nx, ny) in [
+            (x as i32 - 1, y as i32),
+            (x as i32 + 1, y as i32),
+            (x as i32, y as i32 - 1),
+            (x as i32, y as i32 + 1),
+        ] {
+            if nx < 0 || ny < 0 || nx as usize >= wd || ny as usize >= ht {
+                continue;
+            }
+            let (nx, ny) = (nx as usize, ny as usize);
+            if !seen[ny * wd + nx] && w.get(nx, ny) == Material::Empty {
+                seen[ny * wd + nx] = true;
+                q.push_back((nx, ny));
+            }
+        }
+    }
+    false
+}
+
+#[test]
+fn every_generated_world_is_descendable() {
+    for seed in 1..=12u32 {
+        let mut w = World::new(256, 512);
+        worldgen::generate(&mut w, seed);
+        assert!(descendable(&w), "seed {seed} produced a non-descendable world");
+    }
+}

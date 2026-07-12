@@ -33,9 +33,7 @@ fn set(world: &mut World, x: usize, y: usize, m: Material, rng: &mut GenRng) {
 struct Biome {
     top: usize,    // inclusive world row where this band starts
     soil_pct: u32, // 0..100 chance a filled cell is Soil vs Rock (before caves)
-    // 0..100 initial open-cell chance for the Task 2 CA carve; not read yet -- the existing
-    // pass-3 cave carve still uses its own fixed 45% until Task 2 wires it per-band.
-    #[allow(dead_code)]
+    // 0..100 initial open-cell chance for the cave CA carve (pass 3), per depth band.
     cave_seed_pct: u32,
 }
 
@@ -65,6 +63,80 @@ fn blob(world: &mut World, rng: &mut GenRng, cx: i32, cy: i32, radius: i32, m: M
             }
             set(world, x as usize, y as usize, m, rng);
         }
+    }
+}
+
+/// BFS-flood Empty cells from the open sky (top row) using 4-connectivity. Returns whether the
+/// bottom row was reached, plus the deepest (max-y) open cell reached (first one found at that
+/// depth, if there are ties) -- the launch point for `ensure_descendable`'s connectivity carve.
+fn flood_from_surface(world: &World) -> (bool, usize, usize) {
+    use std::collections::VecDeque;
+    let (w, h) = (world.width, world.height);
+    let mut seen = vec![false; w * h];
+    let mut q = VecDeque::new();
+    for x in 0..w {
+        if world.get(x, 0) == Material::Empty {
+            seen[x] = true;
+            q.push_back((x, 0usize));
+        }
+    }
+    let mut reached_bottom = false;
+    let (mut deepest_x, mut deepest_y) = (0usize, 0usize);
+    while let Some((x, y)) = q.pop_front() {
+        if y > deepest_y {
+            deepest_y = y;
+            deepest_x = x;
+        }
+        if y == h - 1 {
+            reached_bottom = true;
+        }
+        for (nx, ny) in [
+            (x as i32 - 1, y as i32),
+            (x as i32 + 1, y as i32),
+            (x as i32, y as i32 - 1),
+            (x as i32, y as i32 + 1),
+        ] {
+            if nx < 0 || ny < 0 || nx as usize >= w || ny as usize >= h {
+                continue;
+            }
+            let (nx, ny) = (nx as usize, ny as usize);
+            if !seen[ny * w + nx] && world.get(nx, ny) == Material::Empty {
+                seen[ny * w + nx] = true;
+                q.push_back((nx, ny));
+            }
+        }
+    }
+    (reached_bottom, deepest_x, deepest_y)
+}
+
+/// Guarantee a top-to-bottom Empty path exists. The cavern CA carve above is density-driven and
+/// can seal pockets off from each other (especially in the rock-dominant deep band), so after
+/// carving we flood Empty from the open sky; if the bottom row wasn't reached, carve a
+/// meandering shaft -- a downward-biased random walk, x jittered by rng.range(-1,2) each step,
+/// width 2-3 cells -- from the deepest surface-reachable point down to the bottom row. This
+/// guarantees a descendable path regardless of how the CA carve happened to connect; caves then
+/// read as branches off this guaranteed route.
+fn ensure_descendable(world: &mut World, rng: &mut GenRng) {
+    let (w, h) = (world.width, world.height);
+    let (reached_bottom, x0, y0) = flood_from_surface(world);
+    if reached_bottom {
+        return;
+    }
+    // Random walk downward from the deepest surface-reachable open cell. Each row's carved span
+    // always covers BOTH the previous and the new center column (plus a 1-cell margin), so
+    // consecutive rows are guaranteed to share at least one column -- that's what makes the shaft
+    // provably 4-connected end to end, regardless of how the jitter happens to land.
+    let mut cur_x = x0 as i32;
+    let mut y = y0;
+    while y < h - 1 {
+        y += 1;
+        let next_x = (cur_x + rng.range(-1, 2)).clamp(0, w as i32 - 1);
+        let lo = (cur_x.min(next_x) - 1).clamp(0, w as i32 - 1);
+        let hi = (cur_x.max(next_x) + 1).clamp(0, w as i32 - 1);
+        for cx in lo..=hi {
+            set(world, cx as usize, y, Material::Empty, rng);
+        }
+        cur_x = next_x;
     }
 }
 
@@ -132,12 +204,16 @@ pub fn generate(world: &mut World, seed: u32) {
         }
     }
 
-    // 3. caves: cellular automata in the rock body, sparing a 4-cell crust
+    // 3. caves: cellular automata in the rock body, sparing a 4-cell crust. The initial open-cell
+    // density is per-biome (cave_seed_pct) rather than a flat rate, so caverns are sparser in the
+    // soft upper band and looser in the mixed/deep bands -- the CA smoothing (isotropic 8-neighbor
+    // majority, below) then reads as organic pockets rather than streaks regardless of band.
     let mut open = vec![false; w * h];
     for x in 0..w {
         for yy in 0..h {
             if (yy as i32) > surface[x] + 4 {
-                open[yy * w + x] = rng.chance(45, 100);
+                let band = biome_at(&bands, yy);
+                open[yy * w + x] = rng.chance(band.cave_seed_pct, 100);
             }
         }
     }
@@ -217,6 +293,18 @@ pub fn generate(world: &mut World, seed: u32) {
             placed_oil += 1;
         }
     }
+
+    // 4b. guaranteed descendable path: the cavern carve is a density-driven CA and is not
+    // guaranteed to connect the surface all the way to the bottom of the world (pockets can seal
+    // off from each other), and the material-pocket blobs above (3b/4) can themselves fill in
+    // pieces of a carved cave with non-Empty material. So this check runs last, after every pass
+    // that can still write solid/liquid/gas material, right before the world goes live: flood-fill
+    // Empty from the open sky and, if the bottom row wasn't reached, carve a meandering shaft down
+    // from the deepest surface-reachable point so the world is always descendable top-to-bottom.
+    // Caves then read as branches off this guaranteed route. (Task 3 will add its own set-piece
+    // placement after this point and must re-run this check so its liquid pools can't reseal the
+    // descent -- see the plan's Task 3 section.)
+    ensure_descendable(world, &mut rng);
 
     // 5. everything settles alive
     world.wake_all();
