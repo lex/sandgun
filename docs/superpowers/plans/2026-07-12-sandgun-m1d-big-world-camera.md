@@ -43,9 +43,11 @@ out vec2 v_uv;
 void main() {
   vec2 pos = vec2[3](vec2(-1,-1), vec2(3,-1), vec2(-1,3))[gl_VertexID];
   vec2 base = vec2(pos.x*0.5+0.5, pos.y*0.5+0.5);   // [0,1] across the quad
-  // window in texture space; flip v (world row 0 is the top, texture row 0 uploaded first)
+  // Translate (not mirror) the window into texture space. Screen-top (base.y=1) -> window top
+  // row (v = camY/worldH); screen-bottom (base.y=0) -> camY+viewH. (1.0-base.y) flips within
+  // the window without mirroring the whole texture around its midpoint.
   v_uv = vec2(u_uvOffset.x + base.x*u_uvScale.x,
-              1.0 - (u_uvOffset.y + base.y*u_uvScale.y));
+              u_uvOffset.y + (1.0 - base.y)*u_uvScale.y);
   gl_Position = vec4(pos, 0.0, 1.0);
 }`;
 // FS unchanged (samples u_tex at v_uv)
