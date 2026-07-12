@@ -140,6 +140,182 @@ fn ensure_descendable(world: &mut World, rng: &mut GenRng) {
     }
 }
 
+/// Solid terrain a set-piece can rest on or be carved into (never air/liquid/gas/organic).
+fn is_terrain(world: &World, x: usize, y: usize) -> bool {
+    matches!(world.get(x, y), Material::Rock | Material::Soil)
+}
+
+/// Height (in cells) of the solid wall at column `x` counting upward from row `y` inclusive --
+/// how many consecutive terrain cells stack from (x, y) toward the surface. Used to cap how deep a
+/// liquid pool can be poured against a bounding wall so it can never spill over the top.
+fn wall_height(world: &World, x: usize, y: usize) -> i32 {
+    let mut n = 0;
+    let mut yy = y as i32;
+    while yy >= 0 && is_terrain(world, x, yy as usize) {
+        n += 1;
+        yy -= 1;
+    }
+    n
+}
+
+/// Task 3 set-piece: stamp fertile Soil beds onto cavern FLOORS (an Empty cell with solid terrain
+/// directly below). Biome-weighted via `soil_pct` so beds are common in the soft upper band and
+/// rare deep. Each bed converts a small patch of the floor terrain to Soil; the soil cell just
+/// under the open floor is returned as a preferred colony-origin site -- a colony germinates there
+/// on food and grows up into the open cavern. Only ever overwrites terrain (never air/liquid).
+fn place_soil_beds(
+    world: &mut World,
+    rng: &mut GenRng,
+    surface: &[i32],
+    bands: &[Biome],
+) -> Vec<(usize, usize)> {
+    let (w, h) = (world.width, world.height);
+    let mut beds: Vec<(usize, usize)> = Vec::new();
+    let target = (w / 8).max(8);
+    let mut attempts = 0;
+    while beds.len() < target && attempts < 8000 {
+        attempts += 1;
+        let x = rng.range(2, w as i32 - 2) as usize;
+        let lo = surface[x] + 5;
+        if lo >= h as i32 - 3 {
+            continue;
+        }
+        let y = rng.range(lo, h as i32 - 3) as usize;
+        // must be a cavern floor: open cell sitting directly on solid terrain
+        if world.get(x, y) != Material::Empty || !is_terrain(world, x, y + 1) {
+            continue;
+        }
+        // biome weighting: reuse soil_pct as a fertility weight (upper 78% vs deep 20%)
+        if !rng.chance(biome_at(bands, y).soil_pct, 100) {
+            continue;
+        }
+        // stamp a small soil patch into the floor terrain below/beside the site
+        for dx in -1i32..=1 {
+            for dy in 1i32..=2 {
+                let (bx, by) = (x as i32 + dx, y as i32 + dy);
+                if bx < 0 || by < 0 || bx as usize >= w || by as usize >= h {
+                    continue;
+                }
+                let (bx, by) = (bx as usize, by as usize);
+                if is_terrain(world, bx, by) {
+                    set(world, bx, by, Material::Soil, rng);
+                }
+            }
+        }
+        beds.push((x, y + 1)); // fertile top-of-bed cell, exposed to cave air
+    }
+    beds
+}
+
+/// Task 3 set-piece: pour shallow liquid pools into cavern BASINS. A basin is a run of >=3 open
+/// cells that all sit directly on solid terrain (a flat floor) and is bounded by solid walls on
+/// BOTH ends, so poured liquid comes to rest instead of a floating blob. Pool depth is capped by
+/// the bounding walls' height (and each added row must be fully open across the run) so it can
+/// never spill. Liquid type is depth-graded: water shallow, oil mid, acid deep and rare. Pools are
+/// kept shallow; the descendability guarantee is re-run after this so a pool can't seal the descent.
+fn place_liquid_pools(world: &mut World, rng: &mut GenRng) {
+    let (w, h) = (world.width, world.height);
+    // Per-zone caps (not one global cap): scanning is top-down, so a single cap would be spent on
+    // the shallow water zone before the scan ever reached the oil/acid zones. Separate budgets
+    // guarantee each depth band gets its pools regardless of scan order.
+    let (oil_top, acid_top) = (h / 2, h * 4 / 5);
+    let (water_cap, oil_cap, acid_cap) = ((w / 16).max(6), (w / 16).max(6), (w / 40).max(2));
+    let (mut water, mut oil, mut acid) = (0usize, 0usize, 0usize);
+    for y in 1..h - 1 {
+        if water >= water_cap && oil >= oil_cap && acid >= acid_cap {
+            break;
+        }
+        let mut x = 1;
+        while x < w - 1 {
+            // find the start of a flat floor run
+            if world.get(x, y) != Material::Empty || !is_terrain(world, x, y + 1) {
+                x += 1;
+                continue;
+            }
+            let start = x;
+            while x < w - 1 && world.get(x, y) == Material::Empty && is_terrain(world, x, y + 1) {
+                x += 1;
+            }
+            let end = x - 1; // inclusive; x now sits just past the run
+            // require a genuine basin: >=3 wide and walled on both ends at this row
+            if end - start + 1 < 3 || !is_terrain(world, start - 1, y) || !is_terrain(world, end + 1, y) {
+                continue;
+            }
+            // depth-graded liquid: acid is deep AND rare, oil mid, water shallow. Skip a zone once
+            // its budget is full (acid also rolls a rarity chance so deep pools are mostly dry).
+            let mat = if y >= acid_top {
+                if acid >= acid_cap || !rng.chance(1, 3) {
+                    continue;
+                }
+                acid += 1;
+                Material::Acid
+            } else if y >= oil_top {
+                if oil >= oil_cap {
+                    continue;
+                }
+                oil += 1;
+                Material::Oil
+            } else {
+                if water >= water_cap {
+                    continue;
+                }
+                water += 1;
+                Material::Water
+            };
+            // deepen only while both walls out-rise the fill and the next row up is fully open
+            let mut depth = 1usize;
+            while depth < 3
+                && y >= depth
+                && wall_height(world, start - 1, y) as usize > depth
+                && wall_height(world, end + 1, y) as usize > depth
+                && (start..=end).all(|cx| world.get(cx, y - depth) == Material::Empty)
+            {
+                depth += 1;
+            }
+            for cy in (y + 1 - depth)..=y {
+                for cx in start..=end {
+                    if world.get(cx, cy) == Material::Empty {
+                        set(world, cx, cy, mat, rng);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Task 3 set-piece: light material pockets kept from the old scatter -- sand dunes straddling the
+/// surface (they slump alive on frame one) and spore-gas blobs floating in cave air. Lighter than
+/// before; the soil beds and basin pools are the main set-pieces now.
+fn place_pockets(world: &mut World, rng: &mut GenRng, surface: &[i32]) {
+    let (w, h) = (world.width, world.height);
+    // sand dunes straddling the surface
+    for _ in 0..(w / 24).max(4) {
+        let x = rng.range(6, w as i32 - 6);
+        let sy = surface[x as usize] - 2;
+        let r = rng.range(3, 7);
+        blob(world, rng, x, sy, r, Material::Sand);
+    }
+    // spore-gas blobs in cave air; they rise and pool by themselves
+    let mut placed = 0;
+    let target = (w / 20).max(5);
+    let mut attempts = 0;
+    while placed < target && attempts < 3000 {
+        attempts += 1;
+        let x = rng.range(4, w as i32 - 4);
+        let lo = surface[x as usize] + 4;
+        if lo >= h as i32 - 4 {
+            continue;
+        }
+        let y = rng.range(lo, h as i32 - 4);
+        if world.get(x as usize, y as usize) != Material::Empty {
+            continue;
+        }
+        let r = rng.range(2, 4);
+        blob(world, rng, x, y, r, Material::SporeGas);
+        placed += 1;
+    }
+}
+
 pub fn generate(world: &mut World, seed: u32) {
     let (w, h) = (world.width, world.height);
     let mut rng = GenRng(seed.wrapping_mul(0x9E37_79B9) | 1);
@@ -247,63 +423,25 @@ pub fn generate(world: &mut World, seed: u32) {
         }
     }
 
-    // 3b. spore pockets: gas blobs in cave air; they rise and pool by themselves
-    let mut placed_spores = 0;
-    for _ in 0..3000 {
-        if placed_spores >= (w / 20).max(5) {
-            break;
-        }
-        let x = rng.range(4, w as i32 - 4);
-        let yy = rng.range(surface[x as usize] + 4, h as i32 - 4);
-        if world.get(x as usize, yy as usize) != Material::Empty {
-            continue;
-        }
-        let r = rng.range(2, 4);
-        blob(world, &mut rng, x, yy, r, Material::SporeGas);
-        placed_spores += 1;
-    }
+    // 3d. structured set-pieces (Task 3): replaces the old blob-scatter (spore/sand/water/oil
+    // blobs). Soil beds are stamped on cavern floors first (fertile germination sites for
+    // colonies), then shallow liquid pools are poured into genuine basins (bounded, so they
+    // settle rather than churn or float), then light sand/spore pockets. Every pass here writes
+    // solid/liquid/gas material and so must run BEFORE the descendability guarantee below.
+    let bed_sites = place_soil_beds(world, &mut rng, &surface, &bands);
+    place_liquid_pools(world, &mut rng);
+    place_pockets(world, &mut rng, &surface);
 
-    // 4. material pockets
-    for _ in 0..(w / 24).max(4) {
-        // sand dunes straddling the surface — they slump alive on frame one
-        let x = rng.range(6, w as i32 - 6);
-        let sy = surface[x as usize] - 2;
-        let r = rng.range(3, 7);
-        blob(world, &mut rng, x, sy, r, Material::Sand);
-    }
-    let mid = (h as i32 * 2) / 3;
-    let mut placed_water = 0;
-    let mut placed_oil = 0;
-    for _ in 0..4000 {
-        if placed_water >= (w / 16).max(6) && placed_oil >= (w / 20).max(5) {
-            break;
-        }
-        let x = rng.range(4, w as i32 - 4);
-        let yy = rng.range(surface[x as usize] + 5, h as i32 - 4);
-        if world.get(x as usize, yy as usize) != Material::Empty {
-            continue;
-        }
-        if yy < mid && placed_water < (w / 16).max(6) {
-            let r = rng.range(2, 5);
-            blob(world, &mut rng, x, yy, r, Material::Water);
-            placed_water += 1;
-        } else if yy >= mid && placed_oil < (w / 20).max(5) {
-            let r = rng.range(2, 4);
-            blob(world, &mut rng, x, yy, r, Material::Oil);
-            placed_oil += 1;
-        }
-    }
-
-    // 4b. guaranteed descendable path: the cavern carve is a density-driven CA and is not
+    // 4. guaranteed descendable path: the cavern carve is a density-driven CA and is not
     // guaranteed to connect the surface all the way to the bottom of the world (pockets can seal
-    // off from each other), and the material-pocket blobs above (3b/4) can themselves fill in
-    // pieces of a carved cave with non-Empty material. So this check runs last, after every pass
-    // that can still write solid/liquid/gas material, right before the world goes live: flood-fill
-    // Empty from the open sky and, if the bottom row wasn't reached, carve a meandering shaft down
-    // from the deepest surface-reachable point so the world is always descendable top-to-bottom.
-    // Caves then read as branches off this guaranteed route. (Task 3 will add its own set-piece
-    // placement after this point and must re-run this check so its liquid pools can't reseal the
-    // descent -- see the plan's Task 3 section.)
+    // off from each other), and the set-pieces above can fill pieces of a carved cave with
+    // non-Empty material (a liquid pool could even seal the main descent). So this check runs
+    // last, after every pass that can still write solid/liquid/gas material, right before the
+    // world goes live: flood-fill Empty from the open sky and, if the bottom row wasn't reached,
+    // carve a meandering shaft down from the deepest surface-reachable point so the world is
+    // always descendable top-to-bottom. Caves (and any pool the shaft drains through) then read as
+    // branches off this guaranteed route. Nothing after this point writes Empty, so the descent
+    // stays open.
     ensure_descendable(world, &mut rng);
 
     // 5. everything settles alive
@@ -327,11 +465,15 @@ pub fn generate(world: &mut World, seed: u32) {
     // 7. seed colony origins: each colony starts as one mycelium cell + one tip on a Soil cell,
     // so it has substrate to eat immediately. Replaces the old pre-filled mycelium veins/mushroom
     // groves -- the world now grows its own mycelium (and, eventually, mushrooms) outward from
-    // these origins via the living organism model, rather than starting pre-grown.
+    // these origins via the living organism model, rather than starting pre-grown. Task 3: bias
+    // origins onto the fertile soil beds stamped on cavern floors (they're Soil exposed to open
+    // cave air, so a colony germinates on food and can grow up into the cavern) -- fall back to any
+    // soil site if no beds were placed.
     let colony_count = world.params.values[crate::params::P_MY_WORLDGEN_COLONIES] as usize;
-    if !soil_sites.is_empty() {
+    let origins: &[(usize, usize)] = if !bed_sites.is_empty() { &bed_sites } else { &soil_sites };
+    if !origins.is_empty() {
         for _ in 0..colony_count {
-            let (sx, sy) = soil_sites[(rng.next() as usize) % soil_sites.len()];
+            let (sx, sy) = origins[(rng.next() as usize) % origins.len()];
             world.spawn_colony(sx, sy);
         }
     }

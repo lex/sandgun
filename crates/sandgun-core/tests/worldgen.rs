@@ -215,3 +215,22 @@ fn every_generated_world_is_descendable() {
         assert!(descendable(&w), "seed {seed} produced a non-descendable world");
     }
 }
+
+// --- worldgen task 3: set-pieces (soil beds, basin liquid pools, pockets) ---
+
+#[test]
+fn world_has_soil_beds_and_liquids_and_stays_descendable() {
+    let mut w = World::new(256, 512);
+    worldgen::generate(&mut w, 3);
+    assert!(count(&w, Material::Soil) > 500, "should have substantial soil beds");
+    let liquid = count(&w, Material::Water) + count(&w, Material::Oil) + count(&w, Material::Acid);
+    assert!(liquid > 0, "should place some liquid pools");
+    assert!(descendable(&w), "features must not seal the descent"); // reuse the Task 2 helper
+}
+
+#[test]
+fn colonies_are_seeded_on_soil() {
+    let mut w = World::new(256, 512);
+    worldgen::generate(&mut w, 4);
+    assert!(w.colony_count() > 0, "worldgen should seed colonies");
+}
