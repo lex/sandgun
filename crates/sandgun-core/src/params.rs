@@ -19,26 +19,36 @@ pub const P_KINETIC_EJECTA: usize = 15; // 0..1 fraction of carved solids that f
 pub const P_INCENDIARY_RADIUS: usize = 16;
 pub const P_ACID_BLOB_RADIUS: usize = 17;
 pub const P_SPORE_BLOB_RADIUS: usize = 18;
-// --- M1c growth ---
-pub const P_GROWTH_INTERVAL: usize = 19; // frames between growth ticks
-pub const P_GROWTH_BUDGET: usize = 20;   // frontier cells processed per growth tick
-pub const P_MAX_FRONTIER: usize = 21;    // hard cap on frontier size
-pub const P_MAX_REACH: usize = 22;       // max cells mycelium bridges into empty from soil
-pub const P_WATER_ACCEL: usize = 23;     // extra colonize attempts when water-adjacent
-pub const P_MATURITY: usize = 24;        // aux age a mycelium cell needs to be fruit-eligible
-pub const P_MAX_MUSHROOMS: usize = 25;   // max simultaneous growing mushrooms
-pub const P_FRUIT_CHANCE: usize = 26;    // 0..1 per growth tick a mature cell fruits
-pub const P_MUSH_HEIGHT_MIN: usize = 27;
-pub const P_MUSH_HEIGHT_MAX: usize = 28;
-pub const P_MUSH_CAP_MIN: usize = 29;
-pub const P_MUSH_CAP_MAX: usize = 30;
-pub const P_MUSH_REVEAL: usize = 31;     // cells revealed per growth tick per mushroom
-pub const P_PUFF_INTERVAL: usize = 32;   // growth ticks between cap spore puffs
-pub const P_PUFF_SPORES: usize = 33;     // spore cells per puff
-pub const P_RESEED_CHANCE: usize = 34;   // 0..1 a spore adjacent to soil seeds a colony
-pub const P_GUNFIRE_SPORE_CHANCE: usize = 35; // 0..1 a carved flesh cell releases spore gas
-pub const P_ASH_CHANCE: usize = 36; // 0..1 chance burnt-out Mycelium/MushroomFlesh leaves Ash (else Empty)
-pub const P_COUNT: usize = 37;
+// --- Parametric mushroom shape/decay (kept from the old M1c growth model; fruiting is now
+// triggered by the M1e colony economy below, not these) ---
+// (P_GROWTH_INTERVAL and P_GROWTH_BUDGET -- the old growth cadence/budget -- were removed in the
+// M1e task 6 review: fully unused once the dormant grow() call site was deleted.)
+pub const P_MAX_MUSHROOMS: usize = 19;   // global cap on simultaneous mushrooms (growing + decaying); see fruit_fed_colonies
+pub const P_MUSH_HEIGHT_MIN: usize = 20;
+pub const P_MUSH_HEIGHT_MAX: usize = 21;
+pub const P_MUSH_CAP_MIN: usize = 22;
+pub const P_MUSH_CAP_MAX: usize = 23;
+pub const P_MUSH_REVEAL: usize = 24;     // cells revealed per growth tick per mushroom
+pub const P_GUNFIRE_SPORE_CHANCE: usize = 25; // 0..1 a carved flesh cell releases spore gas
+pub const P_ASH_CHANCE: usize = 26; // 0..1 chance burnt-out Mycelium/MushroomFlesh leaves Ash (else Empty)
+// --- M1e living mycelium (the only growth model) ---
+pub const P_MY_GROWTH_INTERVAL: usize = 27; // frames between mycelium growth ticks
+pub const P_MY_TIP_CAP: usize = 28;         // max live tips per colony
+pub const P_MY_EAT: usize = 29;             // richness->pool multiplier when a tip eats soil
+pub const P_MY_FRUIT_THRESHOLD: usize = 30; // nutrient pool needed to fruit
+pub const P_MY_FRUIT_COST: usize = 31;      // pool spent per fruiting event
+pub const P_MY_DIEBACK: usize = 32;         // dieback rate
+pub const P_MY_BRANCH_CHANCE: usize = 33;   // 0..1 periodic branch chance per tip
+pub const P_MY_WORLDGEN_COLONIES: usize = 34; // number of colony origins seeded at worldgen
+pub const P_SOIL_RICHNESS_MIN: usize = 35;  // worldgen baseline soil richness (aux) lower bound
+pub const P_SOIL_RICHNESS_MAX: usize = 36;  // worldgen baseline soil richness (aux) upper bound
+pub const P_MUSH_LIFESPAN: usize = 37;      // growth ticks a completed mushroom lives before decaying
+// --- M1e playtest fixes: keep strands on substrate, wiggly, 2-wide ---
+pub const P_MY_MAX_AIR_REACH: usize = 38;   // max consecutive Empty cells a tip may cross before it must reach Soil again
+pub const P_MY_STRAND_WIDTH: usize = 39;    // cells wide a growing strand lays down (bounded 2-3)
+// --- M1e cleanup: concurrent-colony cap (task 2) ---
+pub const P_MY_MAX_COLONIES: usize = 40;    // max concurrently-alive colonies (soft cap below the 255 aux-id hard cap)
+pub const P_COUNT: usize = 41;
 
 /// Hot-tunable sim parameters. Index constants are mirrored in web/src/params.js — keep in sync.
 pub struct Params {
@@ -67,24 +77,28 @@ impl Default for Params {
         v[P_INCENDIARY_RADIUS] = 3.0;
         v[P_ACID_BLOB_RADIUS] = 3.0;
         v[P_SPORE_BLOB_RADIUS] = 4.0;
-        v[P_GROWTH_INTERVAL] = 3.0;
-        v[P_GROWTH_BUDGET] = 24.0;
-        v[P_MAX_FRONTIER] = 4096.0;
-        v[P_MAX_REACH] = 4.0;
-        v[P_WATER_ACCEL] = 2.0;
-        v[P_MATURITY] = 90.0;
         v[P_MAX_MUSHROOMS] = 6.0;
-        v[P_FRUIT_CHANCE] = 0.02;
         v[P_MUSH_HEIGHT_MIN] = 6.0;
         v[P_MUSH_HEIGHT_MAX] = 16.0;
         v[P_MUSH_CAP_MIN] = 3.0;
         v[P_MUSH_CAP_MAX] = 7.0;
         v[P_MUSH_REVEAL] = 2.0;
-        v[P_PUFF_INTERVAL] = 120.0;
-        v[P_PUFF_SPORES] = 5.0;
-        v[P_RESEED_CHANCE] = 0.10;
         v[P_GUNFIRE_SPORE_CHANCE] = 0.5;
         v[P_ASH_CHANCE] = 0.25;
+        v[P_MY_GROWTH_INTERVAL] = 8.0; // M1e playtest: 3 grew far too fast; slower cadence to read as organic growth
+        v[P_MY_TIP_CAP] = 12.0;
+        v[P_MY_EAT] = 1.0;
+        v[P_MY_FRUIT_THRESHOLD] = 400.0;
+        v[P_MY_FRUIT_COST] = 350.0;
+        v[P_MY_DIEBACK] = 1.0;
+        v[P_MY_BRANCH_CHANCE] = 0.04;
+        v[P_MY_WORLDGEN_COLONIES] = 6.0;
+        v[P_SOIL_RICHNESS_MIN] = 40.0;
+        v[P_SOIL_RICHNESS_MAX] = 120.0;
+        v[P_MUSH_LIFESPAN] = 900.0;
+        v[P_MY_MAX_AIR_REACH] = 3.0;
+        v[P_MY_STRAND_WIDTH] = 2.0;
+        v[P_MY_MAX_COLONIES] = 64.0;
         Params { values: v }
     }
 }

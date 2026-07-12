@@ -120,78 +120,55 @@ pub fn generate(world: &mut World, seed: u32) {
         }
     }
 
-    // 3c. mycelium veins: random walks through the soil
-    for _ in 0..(w / 12).max(6) {
-        let mut vx = rng.range(2, w as i32 - 2);
-        let mut vy = surface[vx as usize] + rng.range(1, 6);
-        let len = rng.range(15, 50);
-        for _ in 0..len {
-            if vx < 1 || vy < 1 || vx as usize >= w - 1 || vy as usize >= h - 1 {
-                break;
-            }
-            if world.get(vx as usize, vy as usize) == Material::Soil {
-                set(world, vx as usize, vy as usize, Material::Mycelium, &mut rng);
-            }
-            // wander, biased sideways so veins read as veins
-            vx += rng.range(-1, 2);
-            vy += if rng.chance(1, 3) { rng.range(-1, 2) } else { 0 };
-        }
-    }
-
-    // 3d. mushroom groves: stems + caps grown up from cave floors
-    let mut floors: Vec<(usize, usize)> = Vec::new();
-    for x in (2..w - 2).step_by(3) {
-        for yy in (surface[x] as usize + 2)..h - 2 {
-            let here = world.get(x, yy);
-            let below = world.get(x, yy + 1);
-            if here == Material::Empty && (below == Material::Rock || below == Material::Soil) {
-                floors.push((x, yy));
-                break; // one candidate per column
+    // 3c. deep soil: playtest feedback was that the subsurface was too rock-heavy for mycelium
+    // to have anywhere to grow. Below the crust, most of the remaining Rock becomes Soil too --
+    // rock stays only as a structural MINORITY (smoothed chunky regions/veins, not a solid wall).
+    // A biased cellular automaton (same technique as the cave carve above, but seeded soil-heavy
+    // and biased to keep growing) turns salt-and-pepper noise into coherent soil masses with rock
+    // remnants, rather than a checkerboard. Caves (already carved to Empty above) are untouched --
+    // this pass only ever touches cells that are still Rock, so it can't fill in or block a cave.
+    let mut soil_mask = vec![false; w * h];
+    for x in 0..w {
+        for yy in 0..h {
+            if world.get(x, yy) == Material::Rock {
+                soil_mask[yy * w + x] = rng.chance(72, 100);
             }
         }
     }
-    if !floors.is_empty() {
-        let grove_count = (w / 28).max(3);
-        for g in 0..grove_count {
-            let (fx, fy) = floors[(rng.next() as usize) % floors.len()];
-            let giant = g < 2; // the first two groves are giants
-            let height = if giant { rng.range(14, 24) } else { rng.range(4, 10) } as usize;
-            let cap_rx = if giant { rng.range(8, 14) } else { rng.range(3, 7) };
-            let cap_ry = (cap_rx / 2).max(2);
-            // stem
-            for dy in 0..height {
-                if fy > dy {
-                    let sy = fy - dy;
-                    if world.get(fx, sy) == Material::Empty {
-                        set(world, fx, sy, Material::MushroomFlesh, &mut rng);
-                    }
-                    if giant && fx + 1 < w && world.get(fx + 1, sy) == Material::Empty {
-                        set(world, fx + 1, sy, Material::MushroomFlesh, &mut rng);
+    for _ in 0..3 {
+        let prev = soil_mask.clone();
+        for x in 1..w - 1 {
+            for yy in 1..h - 1 {
+                if world.get(x, yy) != Material::Rock {
+                    continue; // only rock cells are candidates; soil/empty/etc are untouched
+                }
+                let mut n = 0;
+                for dy in -1i32..=1 {
+                    for dx in -1i32..=1 {
+                        if (dx, dy) == (0, 0) {
+                            continue;
+                        }
+                        if prev[((yy as i32 + dy) as usize) * w + (x as i32 + dx) as usize] {
+                            n += 1;
+                        }
                     }
                 }
+                // Biased toward soil (stays soil on a bare majority, converts on a supermajority)
+                // so rock survives only in the thicker/more isolated pockets -- a minority,
+                // structural material rather than the default fill.
+                soil_mask[yy * w + x] = if prev[yy * w + x] { n >= 3 } else { n >= 5 };
             }
-            // elliptical cap, only into open air
-            let top = fy as i32 - height as i32;
-            for dy in -cap_ry..=0 {
-                for dx in -cap_rx..=cap_rx {
-                    let f = (dx * dx) as f32 / (cap_rx * cap_rx).max(1) as f32
-                        + (dy * dy) as f32 / (cap_ry * cap_ry).max(1) as f32;
-                    if f > 1.0 {
-                        continue;
-                    }
-                    let (cx2, cy2) = (fx as i32 + dx, top + dy);
-                    if cx2 < 0 || cy2 < 0 || cx2 as usize >= w || cy2 as usize >= h {
-                        continue;
-                    }
-                    if world.get(cx2 as usize, cy2 as usize) == Material::Empty {
-                        set(world, cx2 as usize, cy2 as usize, Material::MushroomFlesh, &mut rng);
-                    }
-                }
+        }
+    }
+    for x in 0..w {
+        for yy in 0..h {
+            if soil_mask[yy * w + x] && world.get(x, yy) == Material::Rock {
+                set(world, x, yy, Material::Soil, &mut rng);
             }
         }
     }
 
-    // 3e. spore pockets: gas blobs in cave air; they rise and pool by themselves
+    // 3d. spore pockets: gas blobs in cave air; they rise and pool by themselves
     let mut placed_spores = 0;
     for _ in 0..3000 {
         if placed_spores >= (w / 20).max(5) {
@@ -238,11 +215,86 @@ pub fn generate(world: &mut World, seed: u32) {
         }
     }
 
+    // 4b. declump: playtest feedback was that surviving Rock had salt-and-pepper single specks
+    // scattered through the soil, which reads as noise rather than structure. Repeatedly convert
+    // any Rock cell with fewer than 2 Rock neighbors (8-neighborhood) to Soil -- this erodes away
+    // truly lonely specks (0 neighbors) and near-lonely noise (1 neighbor) while leaving cohesive
+    // rock clumps/veins (which have several neighbors along their body) intact. A stricter cutoff
+    // (e.g. <4) cascades: each pass thins every cluster's edge, which drops previously-safe edge
+    // cells below the threshold too, so repeated passes eat through structural rock almost
+    // entirely rather than just the noise. Only ever touches cells that are still Rock and only
+    // ever turns them into Soil, so caves (already Empty) are never affected. Runs AFTER the
+    // material pockets above (step 4): those sand dune blobs paint unconditionally (no
+    // Material::Empty guard, unlike the water/oil/spore pockets), so a dune straddling the
+    // surface can carve into existing Rock and leave a fresh isolated cell behind -- declumping
+    // before that point would miss it. The richness bake below (step 6) runs after this and
+    // scans for whatever is Soil at that point, so newly-converted cells get richness too.
+    // Repeats until stable (a fixed small count can leave a straggler: eroding one cell can drop
+    // a neighbor below the threshold too, and that chain occasionally needs a few more passes
+    // than "2-3" to fully settle) -- each pass strictly shrinks the Rock count, so this always
+    // terminates; the cap is just a generous safety bound, never expected to bind in practice.
+    for _ in 0..20 {
+        let mut to_soil: Vec<(usize, usize)> = Vec::new();
+        for x in 0..w {
+            for yy in 0..h {
+                if world.get(x, yy) != Material::Rock {
+                    continue;
+                }
+                let mut n = 0;
+                for dy in -1i32..=1 {
+                    for dx in -1i32..=1 {
+                        if (dx, dy) == (0, 0) {
+                            continue;
+                        }
+                        let (nx, ny) = (x as i32 + dx, yy as i32 + dy);
+                        if nx < 0 || ny < 0 || nx as usize >= w || ny as usize >= h {
+                            continue;
+                        }
+                        if world.get(nx as usize, ny as usize) == Material::Rock {
+                            n += 1;
+                        }
+                    }
+                }
+                if n < 2 {
+                    to_soil.push((x, yy));
+                }
+            }
+        }
+        if to_soil.is_empty() {
+            break;
+        }
+        for (x, yy) in to_soil {
+            set(world, x, yy, Material::Soil, &mut rng);
+        }
+    }
+
     // 5. everything settles alive
     world.wake_all();
 
-    // 6. the mycelium veins seeded above are already living growth — put them on the
-    // frontier so a freshly generated world starts creeping/fruiting on load instead of
-    // sitting inert until something else calls seed_frontier().
-    world.seed_frontier();
+    // 6. bake substrate richness into every Soil cell's aux so mycelium tips have something to
+    // eat as soon as colonies start growing.
+    let richness_min = world.params.values[crate::params::P_SOIL_RICHNESS_MIN] as i32;
+    let richness_max = world.params.values[crate::params::P_SOIL_RICHNESS_MAX] as i32;
+    let mut soil_sites: Vec<(usize, usize)> = Vec::new();
+    for x in 0..w {
+        for yy in 0..h {
+            if world.get(x, yy) == Material::Soil {
+                let richness = rng.range(richness_min, richness_max + 1).clamp(0, 255) as u8;
+                world.set_soil_richness(x, yy, richness);
+                soil_sites.push((x, yy));
+            }
+        }
+    }
+
+    // 7. seed colony origins: each colony starts as one mycelium cell + one tip on a Soil cell,
+    // so it has substrate to eat immediately. Replaces the old pre-filled mycelium veins/mushroom
+    // groves -- the world now grows its own mycelium (and, eventually, mushrooms) outward from
+    // these origins via the living organism model, rather than starting pre-grown.
+    let colony_count = world.params.values[crate::params::P_MY_WORLDGEN_COLONIES] as usize;
+    if !soil_sites.is_empty() {
+        for _ in 0..colony_count {
+            let (sx, sy) = soil_sites[(rng.next() as usize) % soil_sites.len()];
+            world.spawn_colony(sx, sy);
+        }
+    }
 }

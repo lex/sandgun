@@ -69,13 +69,16 @@ impl WasmWorld {
     pub fn set_param(&mut self, index: u32, value: f32) {
         self.inner.set_param(index, value);
     }
-    pub fn frontier_count(&self) -> usize {
-        self.inner.frontier_len()
-    }
     pub fn mushroom_count(&self) -> usize {
         self.inner.mushroom_len()
     }
-    pub fn frontier_drops(&self) -> u32 {
-        self.inner.frontier_drops() as u32
+    pub fn colony_count(&self) -> usize {
+        self.inner.colony_count()
+    }
+    pub fn tip_count(&self) -> usize {
+        self.inner.tip_count()
+    }
+    pub fn max_colony_pool(&self) -> u32 {
+        self.inner.max_colony_pool()
     }
 }

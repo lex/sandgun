@@ -93,7 +93,9 @@ impl Material {
 
 pub const FLAG_PARITY: u8 = 0b0000_0001; // unused; kept for layout stability
 pub const FLAG_BURNING: u8 = 0b0000_0010;
-pub const FLAG_FRUITED: u8 = 0b0000_1000; // mycelium cell has already fruited once (bit 3)
+// bit 3 (0b0000_1000) formerly a per-cell "already fruited once" flag for the old M1c growth
+// model; free again since M1e task 6 removed that model -- the new economy-driven fruiting
+// (mycelium.rs) doesn't need a per-cell flag for this.
 // flags bit 7: reserved for rigid-body ownership (M2). Do not touch.
 
 #[repr(C)]

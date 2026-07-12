@@ -30,7 +30,9 @@ fn mycelium_vein_burns_like_a_fuse() {
         w.step();
     }
     assert_eq!(count(&w, Material::Mycelium), 0, "the whole vein must burn through");
-    assert!(count(&w, Material::Ash) > 20, "burnt mycelium leaves ash");
+    // Painted Mycelium is inert terrain in the M1e model (no growth system consumes RNG draws
+    // over it), so this just asserts presence, not a tuned threshold.
+    assert!(count(&w, Material::Ash) > 5, "burnt mycelium leaves ash");
     for _ in 0..600 {
         w.step();
     }
@@ -104,12 +106,9 @@ fn lone_fire_burns_out_and_settles() {
 fn flammability_zero_param_prevents_ignition() {
     let mut w = World::new(64, 64);
     w.params.values[sandgun_core::params::P_FLAM_MYCELIUM] = 0.0;
-    // This test is only about fire immunity, not growth -- disable bridging so the painted
-    // mycelium (which has open air above it, no Soil) doesn't grow via the growth system
-    // (painted mycelium now joins the frontier and can bridge into empty space; see
-    // `painted_mycelium_in_open_bridges` in tests/growth.rs), which would change the mycelium
-    // count independently of fire.
-    w.set_param(sandgun_core::params::P_MAX_REACH as u32, 0.0);
+    // This test is only about fire immunity: painted Mycelium is inert terrain in the M1e
+    // organism model (it only grows if a colony's tip later reaches it), so nothing else here
+    // can change the mycelium count independently of fire.
     for x in 20..=40 {
         w.paint(x, 40, 0, Material::Rock as u8);
         w.paint(x, 39, 0, Material::Mycelium as u8);
@@ -148,7 +147,7 @@ fn fire_lifetime_param_controls_painted_fire() {
 fn fire_spreads_at_most_one_cell_per_frame() {
     // A vertical spore column (100% flammable) lit at the BOTTOM. The sweep is always
     // bottom-up, so without stamping ignited cells, fire chains up the whole column in a
-    // single frame. Correct behavior: the burning frontier advances one cell per frame.
+    // single frame. Correct behavior: the burning edge advances one cell per frame.
     let mut w = World::new(64, 64);
     for y in 10..50 {
         w.paint(32, y, 0, Material::SporeGas as u8);

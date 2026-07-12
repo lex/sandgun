@@ -278,3 +278,62 @@ redesign cluster.
   mycelium color (white base), species-as-color. GRILL before building.
 - Projectile-detonates-on-own-fire bug = FIX SOON, STANDALONE (being done now).
 - Everything else in round 3 = deferred into the M1e redesign (don't build twice).
+
+## Worldgen rework — too much rock, not enough soil; predefined formations (Lex, 2026-07-05)
+Current worldgen (worldgen.rs) is random noise, ROCK-HEAVY — not enough Soil for mycelium to
+grow in. Two horizons:
+- **NEAR-TERM (fold into M1e Task 6 or a quick follow-up):** rebalance the soil:rock ratio so
+  colonies have substrate to eat — M1e's kill criterion depends on it. At minimum, more soil
+  strata / soil-filled caverns, fewer solid rock walls. Cheap tuning of the existing generator.
+- **LATER (own milestone/grilling):** Noita-style hand-authored PREDEFINED FORMATIONS +
+  nice traversable caverns, instead of pure noise. Structured level design: template chunks
+  (rooms, tunnels, biomes) stamped into the world, connected caverns to move through. Bigger
+  worldgen redesign; likely pairs with M1d (big world + camera) since level structure matters
+  most at real scale.
+
+## Bigger / more interesting / animated player model (Lex, 2026-07-05)
+Avatar is currently a small cyan AABB stamped into the RGBA buffer (M1b). Lex wants it
+bigger (more pixels), more interesting (an actual character shape — head/body/legs/gun, not a
+box), and ANIMATED (walk cycle, idle, jump). Notes:
+- Bigger avatar = larger collision AABB → affects movement feel + clearance (fit-checks,
+  tunnels). Tune together.
+- RENDER approach: cleanest is to draw the avatar as a sprite on the SEPARATE 2D overlay
+  canvas at the avatar's screen position (decoupled from cell resolution) rather than stamping
+  cells — allows detailed art + frame animation without cramming into the material grid or
+  touching the sim. Sim keeps the AABB for collision; overlay draws the pretty animated sprite
+  on top. (Current stamp-into-RGBA approach limits detail to cell resolution.)
+- Animation: frame-based sprite sheet (inline data-uri, CSP-safe) OR procedural (limbs as
+  a few oscillating rects driven by avatar velocity/on_ground/facing). Procedural is cheap and
+  needs no art assets; sprite sheet looks better but needs art.
+- Facing direction (from aim/velocity), walk vs idle vs jump/fall states from avatar flags.
+Own small task; can be standalone after M1e (or slot in whenever). Not blocking.
+
+## M1e carry-forwards (from final whole-branch review, 2026-07-05) — sharpened severity
+- **Colony Vec never reaped + id wraps at 255 = CUMULATIVE-ever, not concurrent.** spawn_colony id = colonies.len()+1 only grows; dead colonies stay in the Vec. Firing Spore ammo ~250+ times TOTAL over a session (not 250 alive at once) reissues ids → id-keyed lookups (colony_pool, tip_count, same-colony aux match) conflate two colonies = real correctness risk. Fix with the colony-cap/reap work (compact dead colonies, or cap concurrent colonies, or widen id). Do next after M1e merges.
+- **recede_tip aux-misread across burning transition.** adjacent_same_colony_mycelium reads Mycelium aux as colony-id, but a burning Mycelium cell's aux is a fuel countdown (aux triple-semantics collide only here, briefly). A tip receding through a strand whose adjacent segment is on fire treats the burning neighbor as foreign → may die early, stranding a cosmetic stub. Narrow window (fire+starve+recede overlap). Fix: also match a neighbor when flags&FLAG_BURNING && material==Mycelium. Same family as the tree-junction stub item.
+
+## Cross-colony recede at a burning boundary (M1e cleanup T4 review, 2026-07-09)
+recede_tip / adjacent_same_colony_mycelium treat ANY burning Mycelium neighbor as same-colony
+(a burning cell's aux is fuel, not colony id, so it can't be attributed). With multiple
+concurrent colonies (P_MY_MAX_COLONIES) whose strands grow 8-adjacent (pick_step doesn't forbid
+foreign-adjacent growth), colony A's recede can step onto colony B's burning boundary cell.
+Harmless: no cell_count corruption (each released the cell at its own ignition), no termination
+break (cell → Empty, never revisited) — worst case a relocated cosmetic stub. A full fix needs
+per-cell colony id preserved through burning, which the 4-byte cell can't hold. Accept as a
+bounded tradeoff for v1; revisit if it ever reads wrong in playtest.
+
+## T3 end-of-step drop-flood same-step race (M1e cleanup final review, 2026-07-09)
+Task 3 deferred the support-check flood to end-of-step: `drop_unsupported_pending` runs after
+the cell sweep, `grow_mycelium`, and `update_projectiles`, once per step, draining
+`pending_drop_checks` queued by any of those earlier phases. Because it runs last, it scans
+CURRENT material state -- including this step's own growth/spawns -- not just carry-in state
+from before the step. Two narrow same-step edges follow: a Mycelium cell laid this step (tip
+growth or a fresh `spawn_colony`) can be 8-connected into and dropped by a support check queued
+earlier this same step, before that cell existed; and conversely, growth can bridge a group to
+an anchor just before the deferred check runs, letting a should-drop group survive one extra
+step. Not a crash or accounting corruption -- `colony_cell_removed` still fires correctly for
+whatever actually drops -- just a cosmetic same-step spatial edge. A full fix would drain
+`pending_drop_checks` before `grow_mycelium`/`update_projectiles` run each step, at the cost of a
+one-step delay before crater-edge support checks see that step's removals. Documented as an
+accepted bounded tradeoff on `drop_unsupported_pending` (mycelium.rs); revisit only if it ever
+reads wrong in playtest.
