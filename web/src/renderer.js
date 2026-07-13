@@ -41,6 +41,40 @@ void main() {
   outColor = vec4(emissionFor(m), 1.0);
 }`;
 
+// PROP_FS -- one diffusion pass. Reads this texel's material (u_world alpha) for occlusion +
+// emission, reads the previous lightmap (u_light) for the neighbour blur. Opaque cells emit only
+// their own colour and never relay (soft shadows); transmissive cells take max(own emission,
+// falloff * 5-tap blur of neighbours) so emitters stay pinned while light fills open space.
+// NOTE: emissionFor MUST stay byte-identical to SEED_FS.emissionFor (tuned together later).
+const PROP_FS = `#version 300 es
+precision highp float;
+uniform sampler2D u_light;   // previous lightmap (half-res)
+uniform sampler2D u_world;   // world colour + material (full-res, camera window via v_uv)
+uniform vec2 u_texel;        // one lightmap texel in world-window uv space
+uniform float u_falloff;     // per-pass retention, e.g. 0.86
+in vec2 v_uv;
+out vec4 outColor;
+vec3 emissionFor(int m) {
+  if (m == 7)  return vec3(0.25, 1.0, 0.65);  // MushroomFlesh -- hero bioluminescence
+  if (m == 6)  return vec3(0.10, 0.55, 0.45); // Mycelium -- dim glow
+  if (m == 8)  return vec3(0.30, 0.85, 0.20); // SporeGas
+  if (m == 11) return vec3(0.45, 1.0, 0.10);  // Acid
+  if (m == 13) return vec3(1.0, 0.62, 0.18);  // FLAME (fire/burning)
+  return vec3(0.0);
+}
+bool opaque(int m) { return m == 1 || m == 2 || m == 5 || m == 7 || m == 10; }
+void main() {
+  int m = int(texture(u_world, v_uv).a * 255.0 + 0.5);
+  vec3 emis = emissionFor(m);
+  if (opaque(m)) { outColor = vec4(emis, 1.0); return; } // solid: only own emission, no relay
+  vec3 acc = texture(u_light, v_uv).rgb * 0.4;
+  acc += texture(u_light, v_uv + vec2(u_texel.x, 0.0)).rgb * 0.15;
+  acc += texture(u_light, v_uv - vec2(u_texel.x, 0.0)).rgb * 0.15;
+  acc += texture(u_light, v_uv + vec2(0.0, u_texel.y)).rgb * 0.15;
+  acc += texture(u_light, v_uv - vec2(0.0, u_texel.y)).rgb * 0.15;
+  outColor = vec4(max(emis, acc * u_falloff), 1.0);
+}`;
+
 // Chunk size in world cells -- must match sandgun-core's `world::CHUNK`.
 const CHUNK = 64;
 
@@ -112,10 +146,25 @@ export function initGL(canvas, worldW, worldH, viewW, viewH) {
   const seedOffLoc = gl.getUniformLocation(seedProg, 'u_uvOffset');
   const seedScaleLoc = gl.getUniformLocation(seedProg, 'u_uvScale');
 
+  const propProg = gl.createProgram();
+  gl.attachShader(propProg, compile(gl, gl.VERTEX_SHADER, VS));
+  gl.attachShader(propProg, compile(gl, gl.FRAGMENT_SHADER, PROP_FS));
+  gl.linkProgram(propProg);
+  if (!gl.getProgramParameter(propProg, gl.LINK_STATUS)) {
+    throw new Error(gl.getProgramInfoLog(propProg));
+  }
+  const propLightLoc = gl.getUniformLocation(propProg, 'u_light');
+  const propWorldLoc = gl.getUniformLocation(propProg, 'u_world');
+  const propOffLoc = gl.getUniformLocation(propProg, 'u_uvOffset');
+  const propScaleLoc = gl.getUniformLocation(propProg, 'u_uvScale');
+  const propTexelLoc = gl.getUniformLocation(propProg, 'u_texel');
+  const propFalloffLoc = gl.getUniformLocation(propProg, 'u_falloff');
+
   const light = {
     lw, lh, useFloat,
     texA: A.t, fboA: A.fbo, texB: B.t, fboB: B.fbo,
     seedProg, seedWorldLoc, seedOffLoc, seedScaleLoc,
+    propProg, propLightLoc, propWorldLoc, propOffLoc, propScaleLoc, propTexelLoc, propFalloffLoc,
   };
 
   gl.useProgram(prog);
@@ -182,6 +231,41 @@ export function seedEmission(ctx, camX, camY) {
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   // Restore the state drawCamera (and any other main-loop pass) expects to find bound --
   // this pass only touches an offscreen FBO, so nothing here should leak into the main render.
+  gl.viewport(0, 0, viewW, viewH);
+  gl.useProgram(prog);
+}
+
+// Diffuse the seeded emission (in texA) across the lightmap for `passes` iterations, ping-ponging
+// texA<->texB. Each pass spreads light to open neighbours and is blocked by solid terrain (soft
+// occlusion shadows), re-adding each cell's own emission so emitters keep glowing. Renders to the
+// offscreen half-res targets only. After it runs, `ctx.light.result` points at the texture that
+// received the final draw (read that in the composite -- do NOT assume texA). Self-primes and
+// restores GL state (viewport + main program + unbound FBO), matching seedEmission's pattern.
+export function propagate(ctx, camX, camY, passes) {
+  const { gl, tex, prog, worldW, worldH, viewW, viewH, light } = ctx;
+  const uvsx = viewW / worldW, uvsy = viewH / worldH;
+  // Ping-pong: read the current lightmap, write the other. After each draw we swap, so `readT`
+  // always names the texture that was just written -- hence `ctx.light.result = readT` at the end.
+  let readT = light.texA, writeF = light.fboB, readIsA = true;
+  gl.useProgram(light.propProg);
+  gl.viewport(0, 0, light.lw, light.lh);
+  gl.uniform2f(light.propOffLoc, camX / worldW, camY / worldH);
+  gl.uniform2f(light.propScaleLoc, uvsx, uvsy);
+  gl.uniform2f(light.propTexelLoc, uvsx / light.lw, uvsy / light.lh);
+  gl.uniform1f(light.propFalloffLoc, 0.86);
+  for (let i = 0; i < passes; i++) {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, writeF);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, readT); gl.uniform1i(light.propLightLoc, 0);
+    gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, tex);   gl.uniform1i(light.propWorldLoc, 1);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    // Swap: the texture we just wrote (attached to writeF) becomes the next read source.
+    if (readIsA) { readT = light.texB; writeF = light.fboA; }
+    else         { readT = light.texA; writeF = light.fboB; }
+    readIsA = !readIsA;
+  }
+  ctx.light.result = readT; // last-written texture (readT names it after the final swap)
+  // Restore state for the main render path (seedEmission-style self-priming).
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   gl.viewport(0, 0, viewW, viewH);
   gl.useProgram(prog);
 }
