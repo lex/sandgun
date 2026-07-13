@@ -145,13 +145,31 @@ fn is_terrain(world: &World, x: usize, y: usize) -> bool {
     matches!(world.get(x, y), Material::Rock | Material::Soil)
 }
 
+/// Whether (x, y) is a STABLE floor/wall support -- solid terrain that will not move on the first
+/// sim step. Rock is immovable, so it is always support. Soil is a POWDER (it falls), so a Soil
+/// cell only counts as support when it is itself held up: the cell directly below is non-Empty (the
+/// world floor at the bottom edge counts). A lone Soil cell sitting over Empty would fall on frame
+/// one, so it is NOT support. Checking one row down is enough: in a Soil-on-Soil-on-Rock column
+/// every cell is supported, while a floating Soil cell is caught here. This is the right predicate
+/// for "can a poured pool / stamped bed rest here?" -- `is_terrain` (which is true for unsupported
+/// Soil) is not.
+fn is_support(world: &World, x: usize, y: usize) -> bool {
+    match world.get(x, y) {
+        Material::Rock => true,
+        Material::Soil => y + 1 >= world.height || world.get(x, y + 1) != Material::Empty,
+        _ => false,
+    }
+}
+
 /// Height (in cells) of the solid wall at column `x` counting upward from row `y` inclusive --
-/// how many consecutive terrain cells stack from (x, y) toward the surface. Used to cap how deep a
-/// liquid pool can be poured against a bounding wall so it can never spill over the top.
+/// how many consecutive STABLE-support cells stack from (x, y) toward the surface. Used to cap how
+/// deep a liquid pool can be poured against a bounding wall so it can never spill over the top. Uses
+/// `is_support` (not `is_terrain`) so an unsupported Soil cell -- which would fall and let the pool
+/// spill -- doesn't count toward the wall.
 fn wall_height(world: &World, x: usize, y: usize) -> i32 {
     let mut n = 0;
     let mut yy = y as i32;
-    while yy >= 0 && is_terrain(world, x, yy as usize) {
+    while yy >= 0 && is_support(world, x, yy as usize) {
         n += 1;
         yy -= 1;
     }
@@ -181,8 +199,9 @@ fn place_soil_beds(
             continue;
         }
         let y = rng.range(lo, h as i32 - 3) as usize;
-        // must be a cavern floor: open cell sitting directly on solid terrain
-        if world.get(x, y) != Material::Empty || !is_terrain(world, x, y + 1) {
+        // must be a cavern floor: open cell sitting directly on STABLE support (not a Soil cell
+        // that is itself floating over Empty, which would fall and drop the bed).
+        if world.get(x, y) != Material::Empty || !is_support(world, x, y + 1) {
             continue;
         }
         // biome weighting: reuse soil_pct as a fertility weight (upper 78% vs deep 20%)
@@ -197,7 +216,13 @@ fn place_soil_beds(
                     continue;
                 }
                 let (bx, by) = (bx as usize, by as usize);
-                if is_terrain(world, bx, by) {
+                // Only overwrite terrain (never air/liquid) AND only where the new Soil cell will
+                // itself be supported (non-Empty directly below, or the world floor) -- converting a
+                // supported Rock cell that has Empty under it into Soil would just recreate the
+                // float bug we're fixing. Converting terrain to Soil never creates Empty, so the
+                // current below-cell state is the final state.
+                let supported_below = by + 1 >= h || world.get(bx, by + 1) != Material::Empty;
+                if is_terrain(world, bx, by) && supported_below {
                     set(world, bx, by, Material::Soil, rng);
                 }
             }
@@ -227,18 +252,20 @@ fn place_liquid_pools(world: &mut World, rng: &mut GenRng) {
         }
         let mut x = 1;
         while x < w - 1 {
-            // find the start of a flat floor run
-            if world.get(x, y) != Material::Empty || !is_terrain(world, x, y + 1) {
+            // find the start of a flat floor run. The floor must be STABLE support (not a Soil cell
+            // floating over Empty), or the poured liquid wouldn't actually be "at rest" -- the floor
+            // would fall out from under it on the first sim step.
+            if world.get(x, y) != Material::Empty || !is_support(world, x, y + 1) {
                 x += 1;
                 continue;
             }
             let start = x;
-            while x < w - 1 && world.get(x, y) == Material::Empty && is_terrain(world, x, y + 1) {
+            while x < w - 1 && world.get(x, y) == Material::Empty && is_support(world, x, y + 1) {
                 x += 1;
             }
             let end = x - 1; // inclusive; x now sits just past the run
-            // require a genuine basin: >=3 wide and walled on both ends at this row
-            if end - start + 1 < 3 || !is_terrain(world, start - 1, y) || !is_terrain(world, end + 1, y) {
+            // require a genuine basin: >=3 wide and walled on both ends by stable support at this row
+            if end - start + 1 < 3 || !is_support(world, start - 1, y) || !is_support(world, end + 1, y) {
                 continue;
             }
             // depth-graded liquid: acid is deep AND rare, oil mid, water shallow. Skip a zone once
