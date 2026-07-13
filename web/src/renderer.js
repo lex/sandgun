@@ -328,7 +328,7 @@ export function propagate(ctx, camX, camY, passes) {
   gl.uniform2f(light.propOffLoc, camX / worldW, camY / worldH);
   gl.uniform2f(light.propScaleLoc, uvsx, uvsy);
   gl.uniform2f(light.propResLoc, light.lw, light.lh);
-  gl.uniform1f(light.propFalloffLoc, 0.86);
+  gl.uniform1f(light.propFalloffLoc, 0.90);
   for (let i = 0; i < passes; i++) {
     gl.bindFramebuffer(gl.FRAMEBUFFER, writeF);
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, readT); gl.uniform1i(light.propLightLoc, 0);

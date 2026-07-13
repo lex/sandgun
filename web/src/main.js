@@ -72,7 +72,7 @@ function frame() {
     // avatar centre -> TOP-DOWN screen pixels; drawLit flips Y internally
     let px = -1, py = -1;
     if (c) { px = c[0] - cx; py = c[1] - cy; }
-    drawLit(ctx, cx, cy, { playerX: px, playerY: py, playerRadius: 90 });
+    drawLit(ctx, cx, cy, { playerX: px, playerY: py, playerRadius: 115 });
   } else {
     drawCamera(ctx, cx, cy); // camera pan alone uploads nothing
   }
