@@ -55,7 +55,7 @@ const PROP_FS = `#version 300 es
 precision highp float;
 uniform sampler2D u_light;   // previous lightmap (half-res)
 uniform sampler2D u_world;   // world colour + material (full-res, camera window via v_uv)
-uniform vec2 u_texel;        // one lightmap texel in world-window uv space
+uniform vec2 u_res;          // lightmap resolution (lw, lh) -- for screen-space neighbour reads
 uniform float u_falloff;     // per-pass retention, e.g. 0.86
 in vec2 v_uv;
 out vec4 outColor;
@@ -72,11 +72,15 @@ void main() {
   int m = int(texture(u_world, v_uv).a * 255.0 + 0.5);
   vec3 emis = emissionFor(m);
   if (opaque(m)) { outColor = vec4(emis, 1.0); return; } // solid: only own emission, no relay
-  vec3 acc = texture(u_light, v_uv).rgb * 0.4;
-  acc += texture(u_light, v_uv + vec2(u_texel.x, 0.0)).rgb * 0.15;
-  acc += texture(u_light, v_uv - vec2(u_texel.x, 0.0)).rgb * 0.15;
-  acc += texture(u_light, v_uv + vec2(0.0, u_texel.y)).rgb * 0.15;
-  acc += texture(u_light, v_uv - vec2(0.0, u_texel.y)).rgb * 0.15;
+  // The lightmap is SCREEN-indexed (written by a fullscreen pass into the half-res FBO), so its
+  // neighbours live at screen coords, NOT world-window v_uv. This prop pass renders at lw x lh,
+  // so gl_FragCoord.xy ranges [0,lw]x[0,lh] and luv is [0,1] screen space matching the write.
+  vec2 luv = gl_FragCoord.xy / u_res;
+  vec3 acc = texture(u_light, luv).rgb * 0.4;
+  acc += texture(u_light, luv + vec2(1.0/u_res.x, 0.0)).rgb * 0.15;
+  acc += texture(u_light, luv - vec2(1.0/u_res.x, 0.0)).rgb * 0.15;
+  acc += texture(u_light, luv + vec2(0.0, 1.0/u_res.y)).rgb * 0.15;
+  acc += texture(u_light, luv - vec2(0.0, 1.0/u_res.y)).rgb * 0.15;
   outColor = vec4(max(emis, acc * u_falloff), 1.0);
 }`;
 
@@ -202,7 +206,7 @@ export function initGL(canvas, worldW, worldH, viewW, viewH) {
   const propWorldLoc = gl.getUniformLocation(propProg, 'u_world');
   const propOffLoc = gl.getUniformLocation(propProg, 'u_uvOffset');
   const propScaleLoc = gl.getUniformLocation(propProg, 'u_uvScale');
-  const propTexelLoc = gl.getUniformLocation(propProg, 'u_texel');
+  const propResLoc = gl.getUniformLocation(propProg, 'u_res');
   const propFalloffLoc = gl.getUniformLocation(propProg, 'u_falloff');
 
   // Composite program: world colour x (ambient + diffused light + player light) -> screen.
@@ -227,7 +231,7 @@ export function initGL(canvas, worldW, worldH, viewW, viewH) {
     lw, lh, useFloat,
     texA: A.t, fboA: A.fbo, texB: B.t, fboB: B.fbo,
     seedProg, seedWorldLoc, seedOffLoc, seedScaleLoc, seedTimeLoc,
-    propProg, propLightLoc, propWorldLoc, propOffLoc, propScaleLoc, propTexelLoc, propFalloffLoc,
+    propProg, propLightLoc, propWorldLoc, propOffLoc, propScaleLoc, propResLoc, propFalloffLoc,
     compProg, compWorldLoc, compLightLoc, compOffLoc, compScaleLoc,
     compWorldXYLoc, compViewSizeLoc, compWorldHLoc, compPlayerLoc, compPlayerRLoc,
   };
@@ -323,7 +327,7 @@ export function propagate(ctx, camX, camY, passes) {
   gl.viewport(0, 0, light.lw, light.lh);
   gl.uniform2f(light.propOffLoc, camX / worldW, camY / worldH);
   gl.uniform2f(light.propScaleLoc, uvsx, uvsy);
-  gl.uniform2f(light.propTexelLoc, uvsx / light.lw, uvsy / light.lh);
+  gl.uniform2f(light.propResLoc, light.lw, light.lh);
   gl.uniform1f(light.propFalloffLoc, 0.86);
   for (let i = 0; i < passes; i++) {
     gl.bindFramebuffer(gl.FRAMEBUFFER, writeF);
