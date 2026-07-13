@@ -75,6 +75,40 @@ void main() {
   outColor = vec4(max(emis, acc * u_falloff), 1.0);
 }`;
 
+// COMP_FS -- the LIT COMPOSITE pass. Samples the crisp full-res world colour and the smooth
+// half-res diffused lightmap (LINEAR upscaled via v_uv), then multiplies world colour by
+// (depth ambient + diffused light + player light). Depth ambient is bright near the surface
+// (small worldY) and dims deep; the player light is a warm additive radial glow in screen space.
+const COMP_FS = `#version 300 es
+precision highp float;
+uniform sampler2D u_world;    // RGB colour, A material
+uniform sampler2D u_light;    // diffused lightmap (half-res, LINEAR upscaled)
+uniform vec2 u_worldXY;       // window top-left in world cells (camX, camY)
+uniform vec2 u_viewSize;      // viewW, viewH
+uniform float u_worldH;       // total world height (cells) for depth
+uniform vec2 u_player;        // avatar centre in SCREEN pixels (0..viewW, 0..viewH), or (-1) if none
+uniform float u_playerR;      // player light radius in pixels
+in vec2 v_uv;
+out vec4 outColor;
+void main() {
+  vec4 world = texture(u_world, v_uv);
+  vec3 light = texture(u_light, v_uv).rgb;
+  // depth ambient: bright near the surface (small worldY), dim deep. gl_FragCoord.y is
+  // bottom-origin in GL, so screen top (world row camY) is the max fragcoord y -- invert it.
+  float worldY = u_worldXY.y + (1.0 - gl_FragCoord.y / u_viewSize.y) * u_viewSize.y;
+  float depth = clamp(worldY / (u_worldH * 0.6), 0.0, 1.0);
+  vec3 ambient = mix(vec3(0.75, 0.75, 0.80), vec3(0.06, 0.06, 0.10), depth);
+  // player light: warm radial falloff in screen space
+  vec3 pl = vec3(0.0);
+  if (u_player.x >= 0.0) {
+    float d = distance(gl_FragCoord.xy, u_player);
+    float f = clamp(1.0 - d / u_playerR, 0.0, 1.0);
+    pl = vec3(1.0, 0.85, 0.6) * f * f * 1.1;
+  }
+  vec3 lit = world.rgb * (ambient + light + pl);
+  outColor = vec4(lit, 1.0);
+}`;
+
 // Chunk size in world cells -- must match sandgun-core's `world::CHUNK`.
 const CHUNK = 64;
 
@@ -161,11 +195,31 @@ export function initGL(canvas, worldW, worldH, viewW, viewH) {
   const propTexelLoc = gl.getUniformLocation(propProg, 'u_texel');
   const propFalloffLoc = gl.getUniformLocation(propProg, 'u_falloff');
 
+  // Composite program: world colour x (ambient + diffused light + player light) -> screen.
+  const compProg = gl.createProgram();
+  gl.attachShader(compProg, compile(gl, gl.VERTEX_SHADER, VS));
+  gl.attachShader(compProg, compile(gl, gl.FRAGMENT_SHADER, COMP_FS));
+  gl.linkProgram(compProg);
+  if (!gl.getProgramParameter(compProg, gl.LINK_STATUS)) {
+    throw new Error(gl.getProgramInfoLog(compProg));
+  }
+  const compWorldLoc = gl.getUniformLocation(compProg, 'u_world');
+  const compLightLoc = gl.getUniformLocation(compProg, 'u_light');
+  const compOffLoc = gl.getUniformLocation(compProg, 'u_uvOffset');
+  const compScaleLoc = gl.getUniformLocation(compProg, 'u_uvScale');
+  const compWorldXYLoc = gl.getUniformLocation(compProg, 'u_worldXY');
+  const compViewSizeLoc = gl.getUniformLocation(compProg, 'u_viewSize');
+  const compWorldHLoc = gl.getUniformLocation(compProg, 'u_worldH');
+  const compPlayerLoc = gl.getUniformLocation(compProg, 'u_player');
+  const compPlayerRLoc = gl.getUniformLocation(compProg, 'u_playerR');
+
   const light = {
     lw, lh, useFloat,
     texA: A.t, fboA: A.fbo, texB: B.t, fboB: B.fbo,
     seedProg, seedWorldLoc, seedOffLoc, seedScaleLoc,
     propProg, propLightLoc, propWorldLoc, propOffLoc, propScaleLoc, propTexelLoc, propFalloffLoc,
+    compProg, compWorldLoc, compLightLoc, compOffLoc, compScaleLoc,
+    compWorldXYLoc, compViewSizeLoc, compWorldHLoc, compPlayerLoc, compPlayerRLoc,
   };
 
   gl.useProgram(prog);
@@ -273,6 +327,46 @@ export function propagate(ctx, camX, camY, passes) {
   // Restore state for the main render path (seedEmission-style self-priming).
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   gl.viewport(0, 0, viewW, viewH);
+  gl.useProgram(prog);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+}
+
+// LIT COMPOSITE: draw the final lit scene (world colour x (depth ambient + diffused light +
+// player light)) to the default framebuffer (screen). Run seedEmission + propagate first so
+// `ctx.light.result` names the diffused lightmap. `opts = { playerX, playerY, playerRadius }`
+// with the avatar centre in SCREEN pixels (top-left origin as callers see it); pass no player
+// (or playerX < 0) to skip the glow. Self-primes its own program, viewport, and textures
+// (world @ unit 0, lightmap @ unit 1) and restores the established GL-state contract on exit so
+// a later drawCamera / seed / propagate still works.
+export function drawLit(ctx, camX, camY, opts) {
+  const { gl, tex, prog, worldW, worldH, viewW, viewH, light } = ctx;
+  const o = opts || {};
+  const hasPlayer = o.playerX != null && o.playerY != null && o.playerX >= 0;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0, 0, viewW, viewH);
+  gl.useProgram(light.compProg);
+  // World colour (full-res, crisp) on unit 0.
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.uniform1i(light.compWorldLoc, 0);
+  // Diffused lightmap (half-res, LINEAR upscaled) on unit 1.
+  gl.activeTexture(gl.TEXTURE1);
+  gl.bindTexture(gl.TEXTURE_2D, light.result);
+  gl.uniform1i(light.compLightLoc, 1);
+  // Camera window into texture space (same formulas as drawCamera, drives v_uv).
+  gl.uniform2f(light.compScaleLoc, viewW / worldW, viewH / worldH);
+  gl.uniform2f(light.compOffLoc, camX / worldW, camY / worldH);
+  gl.uniform2f(light.compWorldXYLoc, camX, camY);
+  gl.uniform2f(light.compViewSizeLoc, viewW, viewH);
+  gl.uniform1f(light.compWorldHLoc, worldH);
+  if (hasPlayer) gl.uniform2f(light.compPlayerLoc, o.playerX, o.playerY);
+  else gl.uniform2f(light.compPlayerLoc, -1, -1);
+  gl.uniform1f(light.compPlayerRLoc, o.playerRadius != null ? o.playerRadius : 90);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  // Restore the GL-state contract: main program + unit-0 world texture bound, viewport intact,
+  // default framebuffer left bound (it is the screen). Unit 1 is left as-is; callers that need
+  // it re-bind their own (propagate does), matching the self-prime discipline.
   gl.useProgram(prog);
   gl.activeTexture(gl.TEXTURE0);
   gl.bindTexture(gl.TEXTURE_2D, tex);
