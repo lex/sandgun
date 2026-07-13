@@ -33,12 +33,31 @@ deterministic scene.
 - **Emission actually contributes (hue-specific)**: it paints guaranteed emitters at fixed world
   cells ~160 px from the avatar (outside the 90 px warm player light so that light can't fake the
   result), repaints every frame, and samples them through the current camera:
-  - **Fire** (material id 12, renders as FLAME) is **bright and warm** — red clearly beats blue.
-  - **MushroomFlesh** (material id 7) glows **green-dominant** — green clearly beats both red and
-    blue, a hue neither the grey depth-ambient nor the warm player light could produce.
+  - **Fire** (material id 12, renders as FLAME) is checked for brightness on its own cell, but that
+    alone is **not** proof of emission — Fire's base world colour is already orange
+    ([255,150-220,40]) regardless of lighting, so a warm reading there could just be plain material
+    colour. The check that actually proves fire's light propagates samples a patch of guaranteed
+    **open, EMPTY air one cell beside the fire's radius** (with a forced-open corridor so terrain
+    can't block it), and compares it against a same-depth, guaranteed-unlit Empty baseline
+    elsewhere. That comparison — not an absolute reading — is required because Empty's base colour
+    ([26,24,32]) isn't perfectly neutral: it leans slightly blue (B > R), which partly cancels
+    fire's warm tint in the multiplicative composite, so `gapNear.r > gapNear.b` alone is too weak
+    a signal (direct instrumentation of the raw lightmap confirms the light genuinely arrives there
+    with a clear warm skew — the composited-canvas cancellation is a rendering-math artifact, not
+    a sign the emission isn't propagating). Comparing the near sample's warmth/brightness *delta*
+    against the far baseline isolates fire's contribution and was verified stable (R-B delta 3-4,
+    luminance delta ~3) across many runs. The far baseline itself is placed on whichever screen
+    edge is farther from the avatar's actual position, since a fixed mid-screen location can drift
+    into the avatar's own 90 px player light and quietly corrupt the "unlit" control.
+  - **MushroomFlesh** (material id 7) glows **green-dominant** on its neutral beige base material
+    ([232,208,186]) — green clearly beats both red and blue, a hue neither the grey depth-ambient
+    nor the warm player light could produce. No delta-vs-baseline trick is needed here since beige
+    can never itself read as green.
 
-  The far<near check alone can pass on depth-ambient contrast, so the hue checks are what prove the
-  coloured-emission path specifically works.
+  The far<near check alone can pass on depth-ambient contrast, so the fungi green-dominance and the
+  fire adjacent-open-air warmth delta are what prove the coloured-emission/propagation path
+  specifically works (fire's own-cell reading doesn't discriminate, since it's intrinsically orange
+  already).
 
 ## In-game toggle
 
