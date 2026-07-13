@@ -108,6 +108,7 @@ export function initGL(canvas, worldW, worldH, viewW, viewH) {
   gl.viewport(0, 0, viewW, viewH);
   const uvOffsetLoc = gl.getUniformLocation(prog, 'u_uvOffset');
   const uvScaleLoc = gl.getUniformLocation(prog, 'u_uvScale');
+  const texLoc = gl.getUniformLocation(prog, 'u_tex');
   const chunksX = Math.ceil(worldW / CHUNK);
   const chunksY = Math.ceil(worldH / CHUNK);
 
@@ -168,7 +169,7 @@ export function initGL(canvas, worldW, worldH, viewW, viewH) {
   };
 
   gl.useProgram(prog);
-  return { gl, tex, prog, worldW, worldH, viewW, viewH, chunksX, chunksY, uvOffsetLoc, uvScaleLoc, light };
+  return { gl, tex, prog, worldW, worldH, viewW, viewH, chunksX, chunksY, uvOffsetLoc, uvScaleLoc, texLoc, light };
 }
 
 // Upload only the chunks flagged dirty in `dirty` (a Uint8Array, one byte per chunk, row-major
@@ -204,11 +205,14 @@ export function uploadDirtyChunks(ctx, rgbaBytes, dirty) {
 // Draw the camera window (the visible [camX,camX+viewW]x[camY,camY+viewH] slice of the world
 // texture) -- no upload here; call uploadDirtyChunks first.
 export function drawCamera(ctx, camX, camY) {
-  const { gl, prog, worldW, worldH, viewW, viewH, uvOffsetLoc, uvScaleLoc } = ctx;
+  const { gl, tex, prog, worldW, worldH, viewW, viewH, uvOffsetLoc, uvScaleLoc, texLoc } = ctx;
   // Self-prime: set the state this draw needs regardless of what any prior pass left bound,
   // so callers can freely interleave drawCamera with other render passes (e.g. seedEmission).
   gl.useProgram(prog);
   gl.viewport(0, 0, viewW, viewH);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.uniform1i(texLoc, 0);
   gl.uniform2f(uvScaleLoc, viewW / worldW, viewH / worldH);
   gl.uniform2f(uvOffsetLoc, camX / worldW, camY / worldH);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
@@ -233,6 +237,8 @@ export function seedEmission(ctx, camX, camY) {
   // this pass only touches an offscreen FBO, so nothing here should leak into the main render.
   gl.viewport(0, 0, viewW, viewH);
   gl.useProgram(prog);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, tex);
 }
 
 // Diffuse the seeded emission (in texA) across the lightmap for `passes` iterations, ping-ponging
@@ -268,4 +274,6 @@ export function propagate(ctx, camX, camY, passes) {
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   gl.viewport(0, 0, viewW, viewH);
   gl.useProgram(prog);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, tex);
 }
