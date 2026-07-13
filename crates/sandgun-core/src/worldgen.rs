@@ -28,22 +28,19 @@ fn set(world: &mut World, x: usize, y: usize, m: Material, rng: &mut GenRng) {
     world.cells[i] = Cell::new(m, (rng.next() & 3) as u8);
 }
 
-/// A depth band of the subsurface: a soil/rock mix ratio (before caves) plus the initial cave
-/// open-cell density the Task 2 CA carve will use for that depth.
+/// A depth band of the subsurface: the soil/rock mix ratio (before caves are carved).
 struct Biome {
     top: usize,    // inclusive world row where this band starts
     soil_pct: u32, // 0..100 chance a filled cell is Soil vs Rock (before caves)
-    // 0..100 initial open-cell chance for the cave CA carve (pass 3), per depth band.
-    cave_seed_pct: u32,
 }
 
 /// Partition [surface .. h) into depth bands: a soil-rich crust zone near the top grading to
 /// rock-dominant depths. Boundaries scale with world height so it works at any size.
 fn biomes(h: usize) -> Vec<Biome> {
     vec![
-        Biome { top: 0, soil_pct: 78, cave_seed_pct: 42 },        // upper: soft, soil-rich
-        Biome { top: h * 2 / 5, soil_pct: 45, cave_seed_pct: 46 }, // mid: mixed
-        Biome { top: h * 7 / 10, soil_pct: 20, cave_seed_pct: 40 }, // deep: rock-dominant
+        Biome { top: 0, soil_pct: 78 },        // upper: soft, soil-rich
+        Biome { top: h * 2 / 5, soil_pct: 45 }, // mid: mixed
+        Biome { top: h * 7 / 10, soil_pct: 20 }, // deep: rock-dominant
     ]
 }
 
@@ -62,6 +59,162 @@ fn blob(world: &mut World, rng: &mut GenRng, cx: i32, cy: i32, radius: i32, m: M
                 continue;
             }
             set(world, x as usize, y as usize, m, rng);
+        }
+    }
+}
+
+/// Carve an irregular open chamber centered at (cx, cy). Two overlapping body blobs offset along a
+/// random axis give an ELONGATED (non-circular) core, then a handful of lumpy satellite blobs hug
+/// the body so the union reads as one ragged organic cavern rather than a tidy disc or a tidy
+/// cluster of separate circles.
+fn carve_chamber(world: &mut World, rng: &mut GenRng, cx: i32, cy: i32, r: i32) {
+    let stretch = rng.range(r / 4, r / 2 + 1); // mild elongation between the two body lobes
+    let horizontal = rng.chance(1, 2);
+    let (ex, ey) = if horizontal { (stretch, 0) } else { (0, stretch) };
+    blob(world, rng, cx - ex, cy - ey, r, Material::Empty);
+    blob(world, rng, cx + ex, cy + ey, r, Material::Empty);
+    let sats = rng.range(2, 5);
+    for _ in 0..sats {
+        let ox = cx + rng.range(-r, r + 1);
+        let oy = cy + rng.range(-r, r + 1);
+        let sr = (r * rng.range(4, 7) / 10).max(2); // 40-60% of the main radius
+        blob(world, rng, ox, oy, sr, Material::Empty);
+    }
+}
+
+/// Walk a contiguous corridor from a to b. Each step advances one cell toward b on ONE axis, chosen
+/// with probability proportional to that axis's remaining distance -- so the path drifts diagonally
+/// toward the target instead of an L-shape, while ALWAYS reducing the distance to b (guaranteeing the
+/// walk terminates and the corridor is a single contiguous Empty run). A blob at every step widens it.
+fn tunnel_walk(world: &mut World, rng: &mut GenRng, a: (i32, i32), b: (i32, i32), radius: i32) {
+    let (mut x, mut y) = a;
+    loop {
+        blob(world, rng, x, y, radius, Material::Empty);
+        if (x, y) == b {
+            break;
+        }
+        let (dx, dy) = (b.0 - x, b.1 - y);
+        let step_x = if dx != 0 && dy != 0 {
+            rng.chance(dx.unsigned_abs(), dx.unsigned_abs() + dy.unsigned_abs())
+        } else {
+            dx != 0
+        };
+        if step_x {
+            x += dx.signum();
+        } else {
+            y += dy.signum();
+        }
+    }
+}
+
+/// Carve a winding tunnel from a to b, routed through a perpendicular-offset midpoint so it bends
+/// organically rather than running dead straight. Each of the two legs is a monotone `tunnel_walk`
+/// (distance to its target strictly decreases), so the whole tunnel is still guaranteed contiguous.
+fn carve_tunnel(world: &mut World, rng: &mut GenRng, a: (i32, i32), b: (i32, i32), radius: i32) {
+    let (w, h) = (world.width as i32, world.height as i32);
+    let span = ((a.0 - b.0).abs() + (a.1 - b.1).abs()).max(4);
+    let off = (span / 4).clamp(3, 14); // bend amount scales with tunnel length
+    let mx = ((a.0 + b.0) / 2 + rng.range(-off, off + 1)).clamp(0, w - 1);
+    let my = ((a.1 + b.1) / 2 + rng.range(-off, off + 1)).clamp(0, h - 1);
+    tunnel_walk(world, rng, a, (mx, my), radius);
+    tunnel_walk(world, rng, (mx, my), b, radius);
+}
+
+/// Pass 3: carve organic caverns into the solid fill -- structured chambers linked by winding
+/// tunnels over mostly-solid rock (Noita-style), replacing the earlier uniform-density cave CA that
+/// produced salt-and-pepper noise. A vertical SPINE of chambers connected top-to-bottom by winding
+/// tunnels is the guaranteed descent (a real meandering route, not a straight shaft); extra side
+/// chambers branch off the nearest spine node. A final light edge-nibble roughens cavern walls.
+fn carve_caverns(world: &mut World, rng: &mut GenRng, surface: &[i32]) {
+    let (w, h) = (world.width, world.height);
+    let wi = w as i32;
+    let margin = 4i32;
+    let surf_min = *surface.iter().min().unwrap_or(&0);
+    let top = (surf_min + 8).min(h as i32 - 2); // leave a solid crust beneath the surface line
+
+    // Chamber and passage sizes scale with world width so caverns read the same at any resolution
+    // (big open halls at the game's 1024-wide world; proportionally smaller in the 256-wide tests).
+    let unit = (wi / 40).max(4); // ~25 at 1024 wide, ~6 at 256
+    let tunnel_r = (unit / 6).clamp(2, 4);
+
+    // --- vertical spine: a chain of large chambers from just under the surface down to the bottom
+    // row, linked by winding tunnels. Its x GENTLY DRIFTS (a bounded random walk) rather than
+    // jumping across the world each step, so the descent reads as one meandering column, not a
+    // zig-zag. This chain is the guaranteed top-to-bottom descent. ---
+    let spacing = ((h as i32) / 22).clamp(28, 120); // rows between spine chambers
+    let n = ((h as i32 - top) / spacing).max(3);
+    let mut spine: Vec<(i32, i32)> = Vec::new();
+    let mut sx = rng.range(margin, wi - margin);
+    for i in 0..=n {
+        let y = top + (h as i32 - 1 - top) * i / n;
+        spine.push((sx, y));
+        sx = (sx + rng.range(-spacing, spacing + 1)).clamp(margin, wi - margin);
+    }
+    // open the mouth: connect the first spine chamber up into the open sky above the surface line
+    let (mx0, my0) = spine[0];
+    let mouth_y = (surface[mx0 as usize] - 2).max(0);
+    carve_tunnel(world, rng, (mx0, mouth_y), (mx0, my0), tunnel_r);
+    for &(cx, cy) in &spine {
+        let r = rng.range(unit, unit * 2); // big halls
+        carve_chamber(world, rng, cx, cy, r);
+    }
+    for i in 0..spine.len() - 1 {
+        carve_tunnel(world, rng, spine[i], spine[i + 1], tunnel_r);
+    }
+
+    // --- side chambers: extra caverns that grow the network organically. Each links by a winding
+    // tunnel to the geometrically NEAREST chamber placed so far (spine or earlier side chamber), so
+    // connections stay short and LOCAL -- a branching tree rooted in the spine -- instead of long
+    // spokes all converging on a few spine hubs (which read as spider-webs). Sizes vary from wide
+    // halls to small pockets. ---
+    let extra = ((wi * (h as i32 - top)) / (unit * unit * 24)).clamp(6, 140);
+    let mut nodes: Vec<(i32, i32)> = spine.clone();
+    for _ in 0..extra {
+        let cx = rng.range(margin, wi - margin);
+        let cy = rng.range(top, h as i32 - 1);
+        let r = rng.range(unit / 2, unit * 2); // pockets up to full halls
+        carve_chamber(world, rng, cx, cy, r);
+        let mut best = nodes[0];
+        let mut best_d = i32::MAX;
+        for &(px, py) in &nodes {
+            let d = (px - cx) * (px - cx) + (py - cy) * (py - cy);
+            if d < best_d {
+                best_d = d;
+                best = (px, py);
+            }
+        }
+        carve_tunnel(world, rng, (cx, cy), best, tunnel_r);
+        nodes.push((cx, cy));
+    }
+
+    // --- edge-roughening: a couple of passes that nibble solid cells sitting in a concave nook (3+
+    // open neighbors) into Empty, so cavern walls read as ragged rock rather than smooth arcs. Only
+    // wall-adjacent cells are ever touched (never free-floating), so this adds texture without
+    // reintroducing salt-and-pepper. Each pass snapshots open-ness first so the nibble can't cascade
+    // within a pass (a fresh snapshot per pass lets ragged edges deepen slightly, still bounded). ---
+    let top_row = top.max(1) as usize;
+    for _ in 0..2 {
+        let mut is_open = vec![false; w * h];
+        for x in 0..w {
+            for yy in 0..h {
+                is_open[yy * w + x] = world.get(x, yy) == Material::Empty;
+            }
+        }
+        for x in 1..w - 1 {
+            for yy in top_row..h - 1 {
+                if is_open[yy * w + x] {
+                    continue;
+                }
+                let mut adj = 0u32;
+                for (dx, dy) in [(-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)] {
+                    if is_open[((yy as i32 + dy) as usize) * w + (x as i32 + dx) as usize] {
+                        adj += 1;
+                    }
+                }
+                if adj >= 3 && rng.chance(adj, 11) {
+                    set(world, x, yy, Material::Empty, rng);
+                }
+            }
         }
     }
 }
@@ -378,7 +531,7 @@ pub fn generate(world: &mut World, seed: u32) {
     // the current state" rule kill salt-and-pepper noise so each band reads as a cohesive soil or
     // rock mass rather than a checkerboard. Only touches cells at/below the surface line so the
     // open sky above is untouched.
-    for _ in 0..2 {
+    for _ in 0..4 {
         let prev = soil_mask.clone();
         for x in 1..w - 1 {
             for yy in 1..h - 1 {
@@ -407,48 +560,11 @@ pub fn generate(world: &mut World, seed: u32) {
         }
     }
 
-    // 3. caves: cellular automata in the rock body, sparing a 4-cell crust. The initial open-cell
-    // density is per-biome (cave_seed_pct) rather than a flat rate, so caverns are sparser in the
-    // soft upper band and looser in the mixed/deep bands -- the CA smoothing (isotropic 8-neighbor
-    // majority, below) then reads as organic pockets rather than streaks regardless of band.
-    let mut open = vec![false; w * h];
-    for x in 0..w {
-        for yy in 0..h {
-            if (yy as i32) > surface[x] + 4 {
-                let band = biome_at(&bands, yy);
-                open[yy * w + x] = rng.chance(band.cave_seed_pct, 100);
-            }
-        }
-    }
-    for _ in 0..4 {
-        let prev = open.clone();
-        for x in 1..w - 1 {
-            for yy in 1..h - 1 {
-                if (yy as i32) <= surface[x] + 4 {
-                    continue;
-                }
-                let mut n = 0;
-                for dy in -1i32..=1 {
-                    for dx in -1i32..=1 {
-                        if (dx, dy) == (0, 0) {
-                            continue;
-                        }
-                        if prev[((yy as i32 + dy) as usize) * w + (x as i32 + dx) as usize] {
-                            n += 1;
-                        }
-                    }
-                }
-                open[yy * w + x] = if prev[yy * w + x] { n >= 4 } else { n >= 5 };
-            }
-        }
-    }
-    for x in 0..w {
-        for yy in 0..h {
-            if open[yy * w + x] {
-                set(world, x, yy, Material::Empty, &mut rng);
-            }
-        }
-    }
+    // 3. caves: structured chambers linked by winding tunnels over mostly-solid rock (Noita-style).
+    // A vertical spine of chambers connected top-to-bottom is the guaranteed descent; extra side
+    // chambers branch off it. Replaces the old uniform-density cave CA, which carved ~40% of the
+    // whole subsurface into salt-and-pepper Empty specks that never read as actual caverns.
+    carve_caverns(world, &mut rng, &surface);
 
     // 3d. structured set-pieces (Task 3): replaces the old blob-scatter (spore/sand/water/oil
     // blobs). Soil beds are stamped on cavern floors first (fertile germination sites for

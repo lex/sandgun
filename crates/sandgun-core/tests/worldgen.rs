@@ -59,8 +59,15 @@ fn generated_world_has_terrain_air_and_materials() {
     assert!(count(&w, Material::Soil) > total / 10, "soil should be a substantial fraction of the world");
     assert!(count(&w, Material::Empty) > total / 5, "at least 20% air");
     assert!(count(&w, Material::Sand) > 50, "sand pockets present");
-    assert!(count(&w, Material::Water) > 50, "water pools present");
-    assert!(count(&w, Material::Oil) > 50, "oil pockets present");
+    // Worldgen task 4 (2026-07-13): the cave layer became structured chambers + winding tunnels
+    // (Noita-style) instead of the old uniform-density CA. That killed the salt-and-pepper look but
+    // also means far fewer FLAT basins for liquid to pool in, so pool counts are lower -- especially
+    // at this small 256x192 test size. Liquids are still placed (and are plentiful at the game's
+    // 1024x2048 scale: ~248 water / ~207 oil / ~83 acid); these assertions verify pools are PRESENT
+    // rather than pinning the old generator's density. Measured min across seeds 1..=20 here: water 6,
+    // oil 7 -- the >3 floor holds with margin while still failing if pool placement breaks entirely.
+    assert!(count(&w, Material::Water) > 3, "water pools present");
+    assert!(count(&w, Material::Oil) > 3, "oil pockets present");
     assert!(count(&w, Material::SporeGas) > 40, "spore pockets present");
     // Mycelium/MushroomFlesh are no longer pre-grown by worldgen (see
     // generated_world_has_living_colonies below) -- the world seeds living colony origins
@@ -216,6 +223,18 @@ fn every_generated_world_is_descendable() {
     }
 }
 
+// The connectivity guarantee (ensure_descendable) is size-independent, but the app runs at the
+// full 1024x2048 vertical descent -- verify the top->bottom Empty path actually holds at that
+// real size for a spread of seeds (worldgen task 4 acceptance).
+#[test]
+fn full_size_world_is_descendable() {
+    for seed in [1u32, 3, 7, 42, 100] {
+        let mut w = World::new(1024, 2048);
+        worldgen::generate(&mut w, seed);
+        assert!(descendable(&w), "full-size seed {seed} is not descendable");
+    }
+}
+
 // --- worldgen task 3: set-pieces (soil beds, basin liquid pools, pockets) ---
 
 #[test]
@@ -261,3 +280,4 @@ fn colonies_are_seeded_on_soil() {
     worldgen::generate(&mut w, 4);
     assert!(w.colony_count() > 0, "worldgen should seed colonies");
 }
+
