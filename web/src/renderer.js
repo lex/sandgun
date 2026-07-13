@@ -335,10 +335,13 @@ export function propagate(ctx, camX, camY, passes) {
 // LIT COMPOSITE: draw the final lit scene (world colour x (depth ambient + diffused light +
 // player light)) to the default framebuffer (screen). Run seedEmission + propagate first so
 // `ctx.light.result` names the diffused lightmap. `opts = { playerX, playerY, playerRadius }`
-// with the avatar centre in SCREEN pixels (top-left origin as callers see it); pass no player
-// (or playerX < 0) to skip the glow. Self-primes its own program, viewport, and textures
-// (world @ unit 0, lightmap @ unit 1) and restores the established GL-state contract on exit so
-// a later drawCamera / seed / propagate still works.
+// with the avatar centre in TOP-DOWN SCREEN pixels (0,0 = top-left of the view, y grows downward
+// -- the same convention as input.js's clientY - rect.top and every other screen coordinate in
+// this codebase); pass no player (or playerX < 0) to skip the glow. drawLit converts playerY to
+// GL's bottom-origin gl_FragCoord frame internally before upload, so callers never need to flip.
+// Self-primes its own program, viewport, and textures (world @ unit 0, lightmap @ unit 1) and
+// restores the established GL-state contract on exit so a later drawCamera / seed / propagate
+// still works.
 export function drawLit(ctx, camX, camY, opts) {
   const { gl, tex, prog, worldW, worldH, viewW, viewH, light } = ctx;
   const o = opts || {};
@@ -360,7 +363,9 @@ export function drawLit(ctx, camX, camY, opts) {
   gl.uniform2f(light.compWorldXYLoc, camX, camY);
   gl.uniform2f(light.compViewSizeLoc, viewW, viewH);
   gl.uniform1f(light.compWorldHLoc, worldH);
-  if (hasPlayer) gl.uniform2f(light.compPlayerLoc, o.playerX, o.playerY);
+  // u_player feeds gl_FragCoord.xy in COMP_FS, which is bottom-origin in GL -- flip the
+  // top-down screen y we accept from callers into that frame here at the upload boundary.
+  if (hasPlayer) gl.uniform2f(light.compPlayerLoc, o.playerX, viewH - o.playerY);
   else gl.uniform2f(light.compPlayerLoc, -1, -1);
   gl.uniform1f(light.compPlayerRLoc, o.playerRadius != null ? o.playerRadius : 90);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
