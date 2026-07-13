@@ -64,8 +64,9 @@ fn generated_world_has_terrain_air_and_materials() {
     // also means far fewer FLAT basins for liquid to pool in, so pool counts are lower -- especially
     // at this small 256x192 test size. Liquids are still placed (and are plentiful at the game's
     // 1024x2048 scale: ~248 water / ~207 oil / ~83 acid); these assertions verify pools are PRESENT
-    // rather than pinning the old generator's density. Measured min across seeds 1..=20 here: water 6,
-    // oil 7 -- the >3 floor holds with margin while still failing if pool placement breaks entirely.
+    // rather than pinning the old generator's density. This test pins seed 7 (water=50, oil>50 there);
+    // the >3 floor is a low "pools exist at all" bar (some other seeds at this small size dip to ~3-6
+    // water), chosen to fail only if pool placement breaks entirely, not to pin a density.
     assert!(count(&w, Material::Water) > 3, "water pools present");
     assert!(count(&w, Material::Oil) > 3, "oil pockets present");
     assert!(count(&w, Material::SporeGas) > 40, "spore pockets present");

@@ -709,12 +709,12 @@ pub fn generate(world: &mut World, seed: u32) {
     // Bottom-up, a few passes, so a removal that unsupports the liquid above it cascades.
     let (gw, gh) = (world.width, world.height);
     for _ in 0..4 {
-        for y in (0..gh - 2).rev() {
+        for y in (0..gh - 1).rev() {
             for x in 0..gw {
                 if world.get(x, y).is_liquid() {
                     let b1 = world.get(x, y + 1);
                     let unstable = b1 == Material::Empty
-                        || (b1 == Material::Sand && world.get(x, y + 2) == Material::Empty);
+                        || (b1 == Material::Sand && y + 2 < gh && world.get(x, y + 2) == Material::Empty);
                     if unstable {
                         set(world, x, y, Material::Empty, &mut rng);
                     }
