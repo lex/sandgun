@@ -422,20 +422,11 @@ fn is_terrain(world: &World, x: usize, y: usize) -> bool {
     matches!(world.get(x, y), Material::Rock | Material::Soil)
 }
 
-/// Whether (x, y) is a STABLE floor/wall support -- solid terrain that will not move on the first
-/// sim step. Rock is immovable, so it is always support. Soil is a POWDER (it falls), so a Soil
-/// cell only counts as support when it is itself held up: the cell directly below is non-Empty (the
-/// world floor at the bottom edge counts). A lone Soil cell sitting over Empty would fall on frame
-/// one, so it is NOT support. Checking one row down is enough: in a Soil-on-Soil-on-Rock column
-/// every cell is supported, while a floating Soil cell is caught here. This is the right predicate
-/// for "can a poured pool / stamped bed rest here?" -- `is_terrain` (which is true for unsupported
-/// Soil) is not.
+/// Whether (x, y) is STABLE floor/wall support -- solid terrain that will not move under gravity.
+/// Both Rock and Soil are static terrain (soil no longer falls on its own -- see the sim's material
+/// dispatch), so either makes a valid floor for a poured pool or a stamped bed.
 fn is_support(world: &World, x: usize, y: usize) -> bool {
-    match world.get(x, y) {
-        Material::Rock => true,
-        Material::Soil => y + 1 >= world.height || world.get(x, y + 1) != Material::Empty,
-        _ => false,
-    }
+    matches!(world.get(x, y), Material::Rock | Material::Soil)
 }
 
 /// Height (in cells) of the solid wall at column `x` counting upward from row `y` inclusive --
@@ -712,18 +703,18 @@ pub fn generate(world: &mut World, seed: u32) {
     ensure_descendable(world, &mut rng);
 
     // 4b. drop floating liquid the descent carve may have undercut: the shaft can carve out the
-    // ground beneath a just-placed pool, leaving a liquid cell resting on Empty (or on a powder floor
-    // that is itself now over Empty) -- both would fall on the first sim step. Remove that liquid at
-    // gen time so the generated world has no floating pools. Bottom-up, a few passes, so a removal
-    // that unsupports the liquid above it cascades.
+    // ground beneath a just-placed pool, leaving a liquid cell resting on Empty (or on Sand that is
+    // itself over Empty) -- that would fall on the first sim step. Remove it at gen time so the world
+    // has no floating pools. (Soil is static terrain now, so liquid resting on soil is always fine.)
+    // Bottom-up, a few passes, so a removal that unsupports the liquid above it cascades.
     let (gw, gh) = (world.width, world.height);
     for _ in 0..4 {
         for y in (0..gh - 2).rev() {
             for x in 0..gw {
                 if world.get(x, y).is_liquid() {
                     let b1 = world.get(x, y + 1);
-                    let unstable =
-                        b1 == Material::Empty || (b1.is_powder() && world.get(x, y + 2) == Material::Empty);
+                    let unstable = b1 == Material::Empty
+                        || (b1 == Material::Sand && world.get(x, y + 2) == Material::Empty);
                     if unstable {
                         set(world, x, y, Material::Empty, &mut rng);
                     }

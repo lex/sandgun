@@ -248,26 +248,18 @@ fn world_has_soil_beds_and_liquids_and_stays_descendable() {
 }
 
 #[test]
-fn poured_liquids_rest_on_supported_floor() {
-    // Worldgen task 3 review: pools/beds must sit on STABLE support, not on Soil that is itself
-    // floating over Empty. Soil is a powder, so a liquid poured onto a Soil floor whose own
-    // sub-cell is Empty would drop on the first sim step -- contradicting "poured liquid is already
-    // at rest." The floor/wall tests now use is_support (Rock, or Soil held up by a non-Empty cell
-    // below) instead of is_terrain. Assert the invariant the fix restores: no liquid cell rests on
-    // a Soil cell that has Empty directly beneath it. (Seeds 15/20/21/25/27 were the reviewer's
-    // reproducers; the descendability shaft carve after placement can still leave a liquid cell
-    // over bare Empty by draining a pool -- that's a separate, accepted case, so this asserts the
-    // specific powder-over-empty floor the pool/bed placement itself must never create.)
+fn poured_liquids_rest_on_solid_ground() {
+    // Pools must be placed at rest: no liquid cell sitting directly on Empty (it would fall on the
+    // first sim step). Rock and Soil are both static terrain now, so either is valid support; the
+    // gen-time floating-liquid cleanup removes any liquid the descent shaft undercut down to bare
+    // Empty. (Sand still falls, but worldgen doesn't pour liquid onto sand.)
     for seed in 1..=30u32 {
         let mut w = World::new(256, 512);
         worldgen::generate(&mut w, seed);
-        for y in 0..w.height.saturating_sub(2) {
+        for y in 0..w.height.saturating_sub(1) {
             for x in 0..w.width {
-                if w.get(x, y).is_liquid()
-                    && w.get(x, y + 1) == Material::Soil
-                    && w.get(x, y + 2) == Material::Empty
-                {
-                    panic!("seed {seed}: liquid at ({x},{y}) rests on Soil-over-Empty (floating floor)");
+                if w.get(x, y).is_liquid() && w.get(x, y + 1) == Material::Empty {
+                    panic!("seed {seed}: liquid at ({x},{y}) rests on Empty (would fall)");
                 }
             }
         }

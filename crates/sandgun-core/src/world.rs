@@ -778,6 +778,11 @@ impl World {
                 self.cells_processed += 1;
                 self.update_gas(x, y, m);
             }
+            // Soil is STATIC terrain: it holds the world's shape and never falls on its own (like
+            // Noita's dirt), so soil-heavy worldgen doesn't slump into angle-of-repose piles. It is
+            // still `is_powder` for collision and for being flung as debris when shot/exploded (see
+            // the kinetic ejecta path) -- it only "spills" when disturbed, not under plain gravity.
+            Material::Soil => {}
             m if m.is_powder() => {
                 self.cells_processed += 1;
                 self.update_powder(x, y);
