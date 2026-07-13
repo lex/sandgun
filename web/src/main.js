@@ -8,6 +8,7 @@ import { makeCamera } from './camera.js';
 
 const WORLD_W = 1024, WORLD_H = 2048;
 const VIEW_W = 640, VIEW_H = 384;
+const LIGHT_PASSES = 24; // light-reach tuning knob: diffusion passes per frame (higher = farther/softer)
 
 const wasm = await init();
 const world = new WasmWorld(WORLD_W, WORLD_H);
@@ -66,8 +67,8 @@ function frame() {
   if (c) cam.update(c[0], c[1]);
   const cx = Math.floor(cam.x), cy = Math.floor(cam.y);
   if (input.lightingOn !== false) {
-    seedEmission(ctx, cx, cy);
-    propagate(ctx, cx, cy, 24);
+    seedEmission(ctx, cx, cy, performance.now() / 1000);
+    propagate(ctx, cx, cy, LIGHT_PASSES);
     // avatar centre -> TOP-DOWN screen pixels; drawLit flips Y internally
     let px = -1, py = -1;
     if (c) { px = c[0] - cx; py = c[1] - cy; }

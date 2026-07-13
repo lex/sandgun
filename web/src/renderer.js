@@ -26,6 +26,7 @@ void main() { outColor = texture(u_tex, v_uv); }`;
 const SEED_FS = `#version 300 es
 precision highp float;
 uniform sampler2D u_world;   // RGB colour, A = material id (/255)
+uniform float u_time;        // seconds; drives fire flicker (seed stage only)
 in vec2 v_uv;
 out vec4 outColor;
 vec3 emissionFor(int m) {
@@ -38,7 +39,11 @@ vec3 emissionFor(int m) {
 }
 void main() {
   int m = int(texture(u_world, v_uv).a * 255.0 + 0.5);
-  outColor = vec4(emissionFor(m), 1.0);
+  vec3 emis = emissionFor(m);
+  // Fire (FLAME=13) shimmers spatially + temporally so flames feel alive without a global
+  // pulse. Applied ONLY here in the seed stage -- emissionFor stays byte-identical to PROP_FS.
+  if (m == 13) emis *= 0.82 + 0.18 * sin(u_time * 9.0 + v_uv.x * 40.0 + v_uv.y * 40.0);
+  outColor = vec4(emis, 1.0);
 }`;
 
 // PROP_FS -- one diffusion pass. Reads this texel's material (u_world alpha) for occlusion +
@@ -75,10 +80,14 @@ void main() {
   outColor = vec4(max(emis, acc * u_falloff), 1.0);
 }`;
 
-// COMP_FS -- the LIT COMPOSITE pass. Samples the crisp full-res world colour and the smooth
-// half-res diffused lightmap (LINEAR upscaled via v_uv), then multiplies world colour by
-// (depth ambient + diffused light + player light). Depth ambient is bright near the surface
-// (small worldY) and dims deep; the player light is a warm additive radial glow in screen space.
+// COMP_FS -- the LIT COMPOSITE pass. Samples the crisp full-res world colour (v_uv, world-texture
+// space) and the smooth half-res diffused lightmap, then multiplies world colour by (depth ambient
+// + diffused light + player light). Depth ambient is bright near the surface (small worldY) and
+// dims deep; the player light is a warm additive radial glow in screen space.
+// NOTE: the lightmap is WINDOW-scale (its 0..1 uv spans the visible view, bottom-origin), NOT the
+// world texture, so it must be sampled with the screen-normalized coord (gl_FragCoord.xy/viewSize),
+// the same frame the depth/player terms use -- sampling it with the world-space v_uv reads the
+// wrong cell (offset by camX/worldW etc.) and the emission never lands.
 const COMP_FS = `#version 300 es
 precision highp float;
 uniform sampler2D u_world;    // RGB colour, A material
@@ -92,7 +101,7 @@ in vec2 v_uv;
 out vec4 outColor;
 void main() {
   vec4 world = texture(u_world, v_uv);
-  vec3 light = texture(u_light, v_uv).rgb;
+  vec3 light = texture(u_light, gl_FragCoord.xy / u_viewSize).rgb; // window-scale lightmap, not v_uv
   // depth ambient: bright near the surface (small worldY), dim deep. gl_FragCoord.y is
   // bottom-origin in GL, so screen top (world row camY) is the max fragcoord y -- invert it.
   float worldY = u_worldXY.y + (1.0 - gl_FragCoord.y / u_viewSize.y) * u_viewSize.y;
@@ -180,6 +189,7 @@ export function initGL(canvas, worldW, worldH, viewW, viewH) {
   const seedWorldLoc = gl.getUniformLocation(seedProg, 'u_world');
   const seedOffLoc = gl.getUniformLocation(seedProg, 'u_uvOffset');
   const seedScaleLoc = gl.getUniformLocation(seedProg, 'u_uvScale');
+  const seedTimeLoc = gl.getUniformLocation(seedProg, 'u_time');
 
   const propProg = gl.createProgram();
   gl.attachShader(propProg, compile(gl, gl.VERTEX_SHADER, VS));
@@ -216,7 +226,7 @@ export function initGL(canvas, worldW, worldH, viewW, viewH) {
   const light = {
     lw, lh, useFloat,
     texA: A.t, fboA: A.fbo, texB: B.t, fboB: B.fbo,
-    seedProg, seedWorldLoc, seedOffLoc, seedScaleLoc,
+    seedProg, seedWorldLoc, seedOffLoc, seedScaleLoc, seedTimeLoc,
     propProg, propLightLoc, propWorldLoc, propOffLoc, propScaleLoc, propTexelLoc, propFalloffLoc,
     compProg, compWorldLoc, compLightLoc, compOffLoc, compScaleLoc,
     compWorldXYLoc, compViewSizeLoc, compWorldHLoc, compPlayerLoc, compPlayerRLoc,
@@ -274,8 +284,9 @@ export function drawCamera(ctx, camX, camY) {
 
 // Render per-texel emission colour (RGB) for the camera window into the half-res lightmap
 // `texA`, derived from the world texture's material alpha. Renders to an offscreen FBO only --
-// nothing appears on screen. Later tasks propagate/composite `texA`/`texB`.
-export function seedEmission(ctx, camX, camY) {
+// nothing appears on screen. Later tasks propagate/composite `texA`/`texB`. `time` (seconds)
+// drives a subtle FLAME flicker applied on top of emissionFor; omit/0 for a steady seed.
+export function seedEmission(ctx, camX, camY, time) {
   const { gl, tex, prog, worldW, worldH, viewW, viewH, light } = ctx;
   gl.bindFramebuffer(gl.FRAMEBUFFER, light.fboA);
   gl.viewport(0, 0, light.lw, light.lh);
@@ -285,6 +296,7 @@ export function seedEmission(ctx, camX, camY) {
   gl.uniform1i(light.seedWorldLoc, 0);
   gl.uniform2f(light.seedOffLoc, camX / worldW, camY / worldH);
   gl.uniform2f(light.seedScaleLoc, viewW / worldW, viewH / worldH);
+  gl.uniform1f(light.seedTimeLoc, time || 0); // drives FLAME flicker; 0 = steady if omitted
   gl.drawArrays(gl.TRIANGLES, 0, 3);
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   // Restore the state drawCamera (and any other main-loop pass) expects to find bound --
