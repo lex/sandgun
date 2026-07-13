@@ -208,10 +208,11 @@ fn render_maps_material_palette_with_shade_jitter() {
     assert!((px[o] as i16 - 216).abs() <= 9);
     assert!((px[o + 1] as i16 - 184).abs() <= 9);
     assert!((px[o + 2] as i16 - 108).abs() <= 9);
-    assert_eq!(px[o + 3], 255);
-    // empty cell renders the background color exactly
+    // alpha carries the material id (lighting task 1)
+    assert_eq!(px[o + 3], Material::Sand as u8);
+    // empty cell renders the background color exactly, with alpha reporting Empty(0)
     let e = (0 * 64 + 0) * 4;
-    assert_eq!(&px[e..e + 4], &[26, 24, 32, 255]);
+    assert_eq!(&px[e..e + 4], &[26, 24, 32, Material::Empty as u8]);
 }
 
 #[test]

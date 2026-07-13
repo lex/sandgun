@@ -1154,7 +1154,9 @@ impl World {
                         self.rgba[o] = (base[0] as i16 + j).clamp(0, 255) as u8;
                         self.rgba[o + 1] = (base[1] as i16 + j).clamp(0, 255) as u8;
                         self.rgba[o + 2] = (base[2] as i16 + j).clamp(0, 255) as u8;
-                        self.rgba[o + 3] = 255;
+                        // Alpha carries the material id for the web lighting shader; burning cells / Fire report a
+                        // synthetic FLAME code (13) so all flame lights identically. RGB is the shaded colour as before.
+                        self.rgba[o + 3] = if burning || mat == Material::Fire { 13 } else { cell.material };
                     }
                 }
             }
