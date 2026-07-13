@@ -312,7 +312,7 @@ fn fed_colony_fruits_and_spends_pool() {
     // my_grow_countdown starts at 0, so the next step is a growth tick. M1e playtest fix 1 slowed
     // the growth cadence (P_MY_GROWTH_INTERVAL 3 -> 8), so give a bigger budget of growth ticks in
     // case the tip's first several extends move it somewhere fruiting can't fit.
-    for _ in 0..90 {
+    for _ in 0..300 {
         w.step();
         if w.mushroom_len() > before_len { break; }
     }
