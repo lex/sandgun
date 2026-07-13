@@ -1,5 +1,9 @@
-import pkg from '/Users/lex/.npm/_npx/e41f203b7505f1fb/node_modules/playwright/index.js';
-const { chromium } = pkg;
+let chromium;
+try {
+  ({ chromium } = await import('playwright'));
+} catch {
+  ({ chromium } = (await import('/Users/lex/.npm/_npx/e41f203b7505f1fb/node_modules/playwright/index.js')).default);
+}
 const b = await chromium.launch(); const p = await b.newPage();
 const errs = []; p.on('console', m => m.type()==='error' && errs.push(m.text()));
 p.on('pageerror', e => errs.push(String(e)));

@@ -91,6 +91,9 @@ export function initGL(canvas, worldW, worldH, viewW, viewH) {
     const fbo = gl.createFramebuffer();
     gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0);
+    if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
+      console.warn('lightmap FBO incomplete');
+    }
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     return { t, fbo };
   }
@@ -116,7 +119,7 @@ export function initGL(canvas, worldW, worldH, viewW, viewH) {
   };
 
   gl.useProgram(prog);
-  return { gl, tex, worldW, worldH, viewW, viewH, chunksX, chunksY, uvOffsetLoc, uvScaleLoc, light };
+  return { gl, tex, prog, worldW, worldH, viewW, viewH, chunksX, chunksY, uvOffsetLoc, uvScaleLoc, light };
 }
 
 // Upload only the chunks flagged dirty in `dirty` (a Uint8Array, one byte per chunk, row-major
@@ -152,7 +155,11 @@ export function uploadDirtyChunks(ctx, rgbaBytes, dirty) {
 // Draw the camera window (the visible [camX,camX+viewW]x[camY,camY+viewH] slice of the world
 // texture) -- no upload here; call uploadDirtyChunks first.
 export function drawCamera(ctx, camX, camY) {
-  const { gl, worldW, worldH, viewW, viewH, uvOffsetLoc, uvScaleLoc } = ctx;
+  const { gl, prog, worldW, worldH, viewW, viewH, uvOffsetLoc, uvScaleLoc } = ctx;
+  // Self-prime: set the state this draw needs regardless of what any prior pass left bound,
+  // so callers can freely interleave drawCamera with other render passes (e.g. seedEmission).
+  gl.useProgram(prog);
+  gl.viewport(0, 0, viewW, viewH);
   gl.uniform2f(uvScaleLoc, viewW / worldW, viewH / worldH);
   gl.uniform2f(uvOffsetLoc, camX / worldW, camY / worldH);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
@@ -162,7 +169,7 @@ export function drawCamera(ctx, camX, camY) {
 // `texA`, derived from the world texture's material alpha. Renders to an offscreen FBO only --
 // nothing appears on screen. Later tasks propagate/composite `texA`/`texB`.
 export function seedEmission(ctx, camX, camY) {
-  const { gl, tex, worldW, worldH, viewW, viewH, light } = ctx;
+  const { gl, tex, prog, worldW, worldH, viewW, viewH, light } = ctx;
   gl.bindFramebuffer(gl.FRAMEBUFFER, light.fboA);
   gl.viewport(0, 0, light.lw, light.lh);
   gl.useProgram(light.seedProg);
@@ -173,4 +180,8 @@ export function seedEmission(ctx, camX, camY) {
   gl.uniform2f(light.seedScaleLoc, viewW / worldW, viewH / worldH);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  // Restore the state drawCamera (and any other main-loop pass) expects to find bound --
+  // this pass only touches an offscreen FBO, so nothing here should leak into the main render.
+  gl.viewport(0, 0, viewW, viewH);
+  gl.useProgram(prog);
 }
