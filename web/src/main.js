@@ -1,5 +1,5 @@
 import init, { WasmWorld } from './pkg/sandgun_wasm.js';
-import { initGL, uploadDirtyChunks, drawCamera } from './renderer.js';
+import { initGL, uploadDirtyChunks, drawCamera, seedEmission, propagate, drawLit } from './renderer.js';
 import { attachInput, applyInput } from './input.js';
 import { attachGun, applyGun } from './gun.js';
 import { drawOverlay } from './overlay.js';
@@ -8,6 +8,7 @@ import { makeCamera } from './camera.js';
 
 const WORLD_W = 1024, WORLD_H = 2048;
 const VIEW_W = 640, VIEW_H = 384;
+const LIGHT_PASSES = 24; // light-reach tuning knob: diffusion passes per frame (higher = farther/softer)
 
 const wasm = await init();
 const world = new WasmWorld(WORLD_W, WORLD_H);
@@ -30,6 +31,7 @@ const TICK_MS = 1000 / TICK_HZ;
 const MAX_STEPS = 4; // backlog cap — drop excess to avoid a spiral of death after a stall
 let fps = 60, last = performance.now(), acc = 0;
 window.sandgun = { world, wasm, input, gun, cam }; // console poking
+window.sandgun.gfx = ctx; // lighting resources reachable from tests
 
 // One simulation tick: latest avatar/gun intent, then advance the world.
 function stepOnce() {
@@ -63,7 +65,17 @@ function frame() {
   world.clear_render_dirty();
   const c = world.avatar_center();
   if (c) cam.update(c[0], c[1]);
-  drawCamera(ctx, Math.floor(cam.x), Math.floor(cam.y)); // camera pan alone uploads nothing
+  const cx = Math.floor(cam.x), cy = Math.floor(cam.y);
+  if (input.lightingOn !== false) {
+    seedEmission(ctx, cx, cy, performance.now() / 1000);
+    propagate(ctx, cx, cy, LIGHT_PASSES);
+    // avatar centre -> TOP-DOWN screen pixels; drawLit flips Y internally
+    let px = -1, py = -1;
+    if (c) { px = c[0] - cx; py = c[1] - cy; }
+    drawLit(ctx, cx, cy, { playerX: px, playerY: py, playerRadius: 115 });
+  } else {
+    drawCamera(ctx, cx, cy); // camera pan alone uploads nothing
+  }
   fps = fps * 0.95 + (1000 / Math.max(1, dt)) * 0.05;
   drawOverlay(octx, world, wasm, input, fps, gun, cam, uploaded);
   window.sandgun.fps = fps; // measurement hook (M0 task 9 acceptance)

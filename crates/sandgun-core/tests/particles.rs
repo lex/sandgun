@@ -78,5 +78,10 @@ fn render_rgba_no_longer_stamps_a_flying_particle() {
     w.render_rgba();
     let px = w.rgba();
     let o = (10 * 64 + 10) * 4;
-    assert_eq!(&px[o..o + 4], &[26, 24, 32, 255], "an in-flight particle must not be stamped into the grid buffer");
+    // alpha now carries the material id (lighting task 1); an untouched Empty cell reports 0
+    assert_eq!(
+        &px[o..o + 4],
+        &[26, 24, 32, Material::Empty as u8],
+        "an in-flight particle must not be stamped into the grid buffer"
+    );
 }
