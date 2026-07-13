@@ -28,6 +28,49 @@ fn set(world: &mut World, x: usize, y: usize, m: Material, rng: &mut GenRng) {
     world.cells[i] = Cell::new(m, (rng.next() & 3) as u8);
 }
 
+// --- Value-noise fBm (no deps, deterministic) used to domain-warp the tile layout into organic rock.
+fn hash32(mut a: u32) -> u32 {
+    a ^= a >> 16;
+    a = a.wrapping_mul(0x7feb352d);
+    a ^= a >> 15;
+    a = a.wrapping_mul(0x846ca68b);
+    a ^= a >> 16;
+    a
+}
+
+/// Hashed lattice value in 0..1 at integer point (ix, iy).
+fn lattice(ix: i32, iy: i32, seed: u32) -> f32 {
+    let h = hash32(seed ^ (ix as u32).wrapping_mul(0x1657_4d2b) ^ (iy as u32).wrapping_mul(0x68e3_1da4));
+    (h & 0xffff) as f32 / 65535.0
+}
+
+/// Smooth (fade-interpolated) value noise at (x, y).
+fn value_noise(x: f32, y: f32, seed: u32) -> f32 {
+    let (ix, iy) = (x.floor() as i32, y.floor() as i32);
+    let (fx, fy) = (x - ix as f32, y - iy as f32);
+    let (sx, sy) = (fx * fx * (3.0 - 2.0 * fx), fy * fy * (3.0 - 2.0 * fy));
+    let n00 = lattice(ix, iy, seed);
+    let n10 = lattice(ix + 1, iy, seed);
+    let n01 = lattice(ix, iy + 1, seed);
+    let n11 = lattice(ix + 1, iy + 1, seed);
+    let a = n00 + (n10 - n00) * sx;
+    let b = n01 + (n11 - n01) * sx;
+    a + (b - a) * sy
+}
+
+/// 3-octave fractal Brownian motion, output ~0..1.
+fn fbm(x: f32, y: f32, seed: u32) -> f32 {
+    let mut sum = 0.0;
+    let mut amp = 0.5;
+    let mut freq = 1.0;
+    for o in 0..3u32 {
+        sum += amp * value_noise(x * freq, y * freq, seed.wrapping_add(o * 0x9e37));
+        freq *= 2.0;
+        amp *= 0.5;
+    }
+    sum
+}
+
 /// A depth band of the subsurface: the soil/rock mix ratio (before caves are carved).
 struct Biome {
     top: usize,    // inclusive world row where this band starts
@@ -63,160 +106,241 @@ fn blob(world: &mut World, rng: &mut GenRng, cx: i32, cy: i32, radius: i32, m: M
     }
 }
 
-/// Carve an irregular open chamber centered at (cx, cy). Two overlapping body blobs offset along a
-/// random axis give an ELONGATED (non-circular) core, then a handful of lumpy satellite blobs hug
-/// the body so the union reads as one ragged organic cavern rather than a tidy disc or a tidy
-/// cluster of separate circles.
-fn carve_chamber(world: &mut World, rng: &mut GenRng, cx: i32, cy: i32, r: i32) {
-    let stretch = rng.range(r / 4, r / 2 + 1); // mild elongation between the two body lobes
-    let horizontal = rng.chance(1, 2);
-    let (ex, ey) = if horizontal { (stretch, 0) } else { (0, stretch) };
-    blob(world, rng, cx - ex, cy - ey, r, Material::Empty);
-    blob(world, rng, cx + ex, cy + ey, r, Material::Empty);
-    let sats = rng.range(2, 5);
-    for _ in 0..sats {
-        let ox = cx + rng.range(-r, r + 1);
-        let oy = cy + rng.range(-r, r + 1);
-        let sr = (r * rng.range(4, 7) / 10).max(2); // 40-60% of the main radius
-        blob(world, rng, ox, oy, sr, Material::Empty);
-    }
-}
+// ===================== Hybrid cavern generation (organic noise + authored set-pieces) =====================
+//
+// This mirrors Noita's real pipeline (an organic base + hand-placed "pixel scenes"), adapted to be
+// fully procedural: a domain-warped fractal-noise field carves the natural, winding BASE caverns over
+// mostly-solid rock (no grid, no boxes -- the swirl comes from perturbing the noise sample coords with
+// more noise), then a handful of hand-authored FORMATION set-pieces (halls with ledges, pillared
+// galleries, tall chambers, shafts, organic caverns) are stamped in for designed structure and, above
+// all, solid FLOORS/LEDGES you land on instead of falling through. A final light warp blends the
+// set-pieces' straight edges into the surrounding rock. Everything carves INTO the depth-graded
+// soil/rock fill, so walls are soil near the surface and rock deep.
 
-/// Walk a contiguous corridor from a to b. Each step advances one cell toward b on ONE axis, chosen
-/// with probability proportional to that axis's remaining distance -- so the path drifts diagonally
-/// toward the target instead of an L-shape, while ALWAYS reducing the distance to b (guaranteeing the
-/// walk terminates and the corridor is a single contiguous Empty run). A blob at every step widens it.
-fn tunnel_walk(world: &mut World, rng: &mut GenRng, a: (i32, i32), b: (i32, i32), radius: i32) {
-    let (mut x, mut y) = a;
-    loop {
-        blob(world, rng, x, y, radius, Material::Empty);
-        if (x, y) == b {
-            break;
-        }
-        let (dx, dy) = (b.0 - x, b.1 - y);
-        let step_x = if dx != 0 && dy != 0 {
-            rng.chance(dx.unsigned_abs(), dx.unsigned_abs() + dy.unsigned_abs())
-        } else {
-            dx != 0
-        };
-        if step_x {
-            x += dx.signum();
-        } else {
-            y += dy.signum();
-        }
-    }
-}
-
-/// Carve a winding tunnel from a to b, routed through a perpendicular-offset midpoint so it bends
-/// organically rather than running dead straight. Each of the two legs is a monotone `tunnel_walk`
-/// (distance to its target strictly decreases), so the whole tunnel is still guaranteed contiguous.
-fn carve_tunnel(world: &mut World, rng: &mut GenRng, a: (i32, i32), b: (i32, i32), radius: i32) {
+/// Carve a solid->Empty axis-aligned rectangle, clamped to the world and to y >= floor_top (so a
+/// formation never eats into the solid surface crust above the cave region).
+fn dig(world: &mut World, rng: &mut GenRng, x0: i32, y0: i32, x1: i32, y1: i32, floor_top: i32) {
     let (w, h) = (world.width as i32, world.height as i32);
-    let span = ((a.0 - b.0).abs() + (a.1 - b.1).abs()).max(4);
-    let off = (span / 4).clamp(3, 14); // bend amount scales with tunnel length
-    let mx = ((a.0 + b.0) / 2 + rng.range(-off, off + 1)).clamp(0, w - 1);
-    let my = ((a.1 + b.1) / 2 + rng.range(-off, off + 1)).clamp(0, h - 1);
-    tunnel_walk(world, rng, a, (mx, my), radius);
-    tunnel_walk(world, rng, (mx, my), b, radius);
+    let (yy0, yy1) = (y0.max(floor_top).max(0), y1.min(h - 1));
+    let (xx0, xx1) = (x0.max(0), x1.min(w - 1));
+    for y in yy0..=yy1 {
+        for x in xx0..=xx1 {
+            set(world, x as usize, y as usize, Material::Empty, rng);
+        }
+    }
 }
 
-/// Pass 3: carve organic caverns into the solid fill -- structured chambers linked by winding
-/// tunnels over mostly-solid rock (Noita-style), replacing the earlier uniform-density cave CA that
-/// produced salt-and-pepper noise. A vertical SPINE of chambers connected top-to-bottom by winding
-/// tunnels is the guaranteed descent (a real meandering route, not a straight shaft); extra side
-/// chambers branch off the nearest spine node. A final light edge-nibble roughens cavern walls.
+/// Fill an axis-aligned rectangle with a solid material (used to lay back structural ledges/pillars
+/// and to line cavern floors with fertile soil), clamped to the world.
+fn fill(world: &mut World, rng: &mut GenRng, x0: i32, y0: i32, x1: i32, y1: i32, m: Material) {
+    let (w, h) = (world.width as i32, world.height as i32);
+    for y in y0.max(0)..=y1.min(h - 1) {
+        for x in x0.max(0)..=x1.min(w - 1) {
+            set(world, x as usize, y as usize, m, rng);
+        }
+    }
+}
+
+/// Some open formations line their floor with a thin band of Soil -- fertile ground for colonies and
+/// material variety at ALL depths (not just the surface crust), and it reads as a cavern floor.
+fn maybe_soil_floor(world: &mut World, rng: &mut GenRng, x0: i32, y: i32, x1: i32) {
+    if rng.chance(2, 5) {
+        fill(world, rng, x0, y, x1, y + 1, Material::Soil);
+    }
+}
+
+// --- Formations. Each carves its brick region [ox,ox+bw) x [oy,oy+bh); `top` is the crust floor
+// (never carve above it). They leave the surrounding fill as walls and keep a solid floor band. ---
+
+/// Open hall with a rock shelf jutting from one wall (a standing ledge + overhang).
+fn f_hall(world: &mut World, rng: &mut GenRng, ox: i32, oy: i32, bw: i32, bh: i32, top: i32) {
+    let wall = 2;
+    let floor = (bh / 6).max(3);
+    let (x0, x1) = (ox + wall, ox + bw - 1 - wall);
+    let floor_y = oy + bh - 1 - floor;
+    let ledge_y = oy + bh * 3 / 5;
+    dig(world, rng, x0, oy + 2, x1, ledge_y - 1, top); // above the shelf
+    if rng.chance(1, 2) {
+        dig(world, rng, ox + bw / 2, ledge_y, x1, ledge_y + 2, top); // shelf on the left half
+    } else {
+        dig(world, rng, x0, ledge_y, ox + bw / 2, ledge_y + 2, top); // shelf on the right half
+    }
+    dig(world, rng, x0, ledge_y + 3, x1, floor_y, top); // below the shelf down to the floor
+    maybe_soil_floor(world, rng, x0, floor_y + 1, x1);
+}
+
+/// Organic cavern: a few overlapping open lobes over a kept solid floor.
+fn f_cavern(world: &mut World, rng: &mut GenRng, ox: i32, oy: i32, bw: i32, bh: i32, top: i32) {
+    let floor = (bh / 6).max(3);
+    let floor_y = oy + bh - 1 - floor;
+    let lobes = rng.range(3, 6);
+    for _ in 0..lobes {
+        let cx = rng.range(ox + bw / 6, ox + bw * 5 / 6);
+        let cy = rng.range(oy + bh / 4, floor_y);
+        let rx = rng.range(bh / 4, bh / 2);
+        let ry = rng.range(bh / 5, bh * 2 / 5);
+        dig(world, rng, cx - rx, cy - ry, cx + rx, cy + ry, top);
+    }
+    // guarantee a floor even where a lobe dipped low
+    fill(world, rng, ox, floor_y + 1, ox + bw - 1, oy + bh - 1, Material::Rock);
+    maybe_soil_floor(world, rng, ox + 2, floor_y + 1, ox + bw - 3);
+}
+
+/// Open room split by 2-3 rock pillars floor-to-ceiling.
+fn f_pillars(world: &mut World, rng: &mut GenRng, ox: i32, oy: i32, bw: i32, bh: i32, top: i32) {
+    let wall = 2;
+    let floor = (bh / 6).max(3);
+    let (x0, x1) = (ox + wall, ox + bw - 1 - wall);
+    let (y0, y1) = (oy + 2, oy + bh - 1 - floor);
+    dig(world, rng, x0, y0, x1, y1, top);
+    let pillars = rng.range(2, 4);
+    for _ in 0..pillars {
+        let px = rng.range(ox + bw / 6, ox + bw * 5 / 6);
+        fill(world, rng, px - 1, y0, px + 1, y1, Material::Rock);
+    }
+    maybe_soil_floor(world, rng, x0, y1 + 1, x1);
+}
+
+/// Vertical shaft with alternating rock footholds so you can descend ledge-to-ledge (not free-fall).
+fn f_shaft(world: &mut World, rng: &mut GenRng, ox: i32, oy: i32, bw: i32, bh: i32, top: i32) {
+    let wall = 2;
+    let (x0, x1) = (ox + wall, ox + bw - 1 - wall);
+    dig(world, rng, x0, oy + 2, x1, oy + bh - 4, top);
+    let mut ly = oy + bh / 5;
+    let mut left = rng.chance(1, 2);
+    while ly < oy + bh - 6 {
+        if left {
+            fill(world, rng, x0, ly, ox + bw / 2, ly + 2, Material::Rock);
+        } else {
+            fill(world, rng, ox + bw / 2, ly, x1, ly + 2, Material::Rock);
+        }
+        left = !left;
+        ly += (bh / 5).max(6);
+    }
+}
+
+/// Tall chamber with a mid platform and a kept floor.
+fn f_chamber(world: &mut World, rng: &mut GenRng, ox: i32, oy: i32, bw: i32, bh: i32, top: i32) {
+    let wall = 2;
+    let floor = (bh / 10).max(3);
+    let (x0, x1) = (ox + wall, ox + bw - 1 - wall);
+    let floor_y = oy + bh - 1 - floor;
+    let plat_y = oy + bh / 2;
+    dig(world, rng, x0, oy + 2, x1, plat_y - 1, top);
+    // a platform jutting from one wall, with a gap to drop past
+    if rng.chance(1, 2) {
+        fill(world, rng, x0, plat_y, ox + bw * 2 / 3, plat_y + 2, Material::Rock);
+    } else {
+        fill(world, rng, ox + bw / 3, plat_y, x1, plat_y + 2, Material::Rock);
+    }
+    dig(world, rng, x0, plat_y + 3, x1, floor_y, top);
+    maybe_soil_floor(world, rng, x0, floor_y + 1, x1);
+}
+
+/// Pass 3: hybrid organic caverns (Noita-style base + authored set-pieces). First a domain-warped
+/// fractal-noise field carves the natural, winding BASE caverns over mostly-solid rock (no grid, no
+/// boxes -- the swirl comes from warping the noise sample coordinates with more noise). Then a
+/// handful of hand-authored FORMATION set-pieces (halls with ledges, pillared galleries, tall
+/// chambers, shafts, organic caverns) are stamped in for designed, hand-made structure and, crucially,
+/// solid FLOORS/LEDGES you land on. A surface mouth links the network to the sky; the descendability
+/// guarantee runs later as a safety net.
 fn carve_caverns(world: &mut World, rng: &mut GenRng, surface: &[i32]) {
-    let (w, h) = (world.width, world.height);
-    let wi = w as i32;
-    let margin = 4i32;
+    let (w, h) = (world.width as i32, world.height as i32);
     let surf_min = *surface.iter().min().unwrap_or(&0);
-    let top = (surf_min + 8).min(h as i32 - 2); // leave a solid crust beneath the surface line
+    let top = (surf_min + 6).min(h - 2); // solid crust beneath the surface line
 
-    // Chamber and passage sizes scale with world width so caverns read the same at any resolution
-    // (big open halls at the game's 1024-wide world; proportionally smaller in the 256-wide tests).
-    let unit = (wi / 40).max(4); // ~25 at 1024 wide, ~6 at 256
-    let tunnel_r = (unit / 6).clamp(2, 4);
-
-    // --- vertical spine: a chain of large chambers from just under the surface down to the bottom
-    // row, linked by winding tunnels. Its x GENTLY DRIFTS (a bounded random walk) rather than
-    // jumping across the world each step, so the descent reads as one meandering column, not a
-    // zig-zag. This chain is the guaranteed top-to-bottom descent. ---
-    let spacing = ((h as i32) / 22).clamp(28, 120); // rows between spine chambers
-    let n = ((h as i32 - top) / spacing).max(3);
-    let mut spine: Vec<(i32, i32)> = Vec::new();
-    let mut sx = rng.range(margin, wi - margin);
-    for i in 0..=n {
-        let y = top + (h as i32 - 1 - top) * i / n;
-        spine.push((sx, y));
-        sx = (sx + rng.range(-spacing, spacing + 1)).clamp(margin, wi - margin);
-    }
-    // open the mouth: connect the first spine chamber up into the open sky above the surface line
-    let (mx0, my0) = spine[0];
-    let mouth_y = (surface[mx0 as usize] - 2).max(0);
-    carve_tunnel(world, rng, (mx0, mouth_y), (mx0, my0), tunnel_r);
-    for &(cx, cy) in &spine {
-        let r = rng.range(unit, unit * 2); // big halls
-        carve_chamber(world, rng, cx, cy, r);
-    }
-    for i in 0..spine.len() - 1 {
-        carve_tunnel(world, rng, spine[i], spine[i + 1], tunnel_r);
-    }
-
-    // --- side chambers: extra caverns that grow the network organically. Each links by a winding
-    // tunnel to the geometrically NEAREST chamber placed so far (spine or earlier side chamber), so
-    // connections stay short and LOCAL -- a branching tree rooted in the spine -- instead of long
-    // spokes all converging on a few spine hubs (which read as spider-webs). Sizes vary from wide
-    // halls to small pockets. ---
-    let extra = ((wi * (h as i32 - top)) / (unit * unit * 24)).clamp(6, 140);
-    let mut nodes: Vec<(i32, i32)> = spine.clone();
-    for _ in 0..extra {
-        let cx = rng.range(margin, wi - margin);
-        let cy = rng.range(top, h as i32 - 1);
-        let r = rng.range(unit / 2, unit * 2); // pockets up to full halls
-        carve_chamber(world, rng, cx, cy, r);
-        let mut best = nodes[0];
-        let mut best_d = i32::MAX;
-        for &(px, py) in &nodes {
-            let d = (px - cx) * (px - cx) + (py - cy) * (py - cy);
-            if d < best_d {
-                best_d = d;
-                best = (px, py);
-            }
-        }
-        carve_tunnel(world, rng, (cx, cy), best, tunnel_r);
-        nodes.push((cx, cy));
-    }
-
-    // --- edge-roughening: a couple of passes that nibble solid cells sitting in a concave nook (3+
-    // open neighbors) into Empty, so cavern walls read as ragged rock rather than smooth arcs. Only
-    // wall-adjacent cells are ever touched (never free-floating), so this adds texture without
-    // reintroducing salt-and-pepper. Each pass snapshots open-ness first so the nibble can't cascade
-    // within a pass (a fresh snapshot per pass lets ragged edges deepen slightly, still bounded). ---
-    let top_row = top.max(1) as usize;
-    for _ in 0..2 {
-        let mut is_open = vec![false; w * h];
+    // --- 1. organic base caves: domain-warped fBm. Sample coords are displaced by a lower-frequency
+    // noise (the "warp") so the caverns swirl and wind instead of looking like round blobs. A cell is
+    // open where the field falls below a depth-scaled threshold: more open near the surface, tighter
+    // (more solid rock) with depth. ---
+    let cave_seed = rng.next();
+    let warp_seed = rng.next();
+    let freq = 1.0 / 34.0; // cavern scale
+    let wfreq = 1.0 / 64.0; // warp field scale
+    let wamp = 20.0; // warp amplitude in cells
+    for y in top..h {
+        let depth = (y - top) as f32 / (h - top).max(1) as f32;
+        let thresh = 0.42 - 0.14 * depth; // open fraction: ~upper looser, deep tighter
         for x in 0..w {
-            for yy in 0..h {
-                is_open[yy * w + x] = world.get(x, yy) == Material::Empty;
-            }
-        }
-        for x in 1..w - 1 {
-            for yy in top_row..h - 1 {
-                if is_open[yy * w + x] {
-                    continue;
-                }
-                let mut adj = 0u32;
-                for (dx, dy) in [(-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)] {
-                    if is_open[((yy as i32 + dy) as usize) * w + (x as i32 + dx) as usize] {
-                        adj += 1;
-                    }
-                }
-                if adj >= 3 && rng.chance(adj, 11) {
-                    set(world, x, yy, Material::Empty, rng);
-                }
+            let (xf, yf) = (x as f32, y as f32);
+            let wx = xf + (fbm(xf * wfreq, yf * wfreq, warp_seed) - 0.5) * 2.0 * wamp;
+            let wy = yf + (fbm(xf * wfreq, yf * wfreq, warp_seed ^ 0x9e37_79b9) - 0.5) * 2.0 * wamp;
+            if fbm(wx * freq, wy * freq, cave_seed) < thresh {
+                set(world, x as usize, y as usize, Material::Empty, rng);
             }
         }
     }
+
+    // --- 2. authored set-pieces: designed rooms stamped into the organic caves for hand-made
+    // structure and standing floors/ledges (like Noita's pixel scenes). Wide footprints get halls /
+    // galleries / caverns; tall footprints get chambers / shafts. ---
+    let u = (w / 20).clamp(30, 60);
+    let n_sp = ((w * (h - top)) / (u * u * 8)).clamp(5, 80);
+    for _ in 0..n_sp {
+        let sw = rng.range(u, u * 2);
+        let sh = rng.range(u, u * 2);
+        let ox = rng.range(2, (w - sw - 2).max(3));
+        let oy = rng.range(top, (h - sh - 2).max(top + 1));
+        if sw >= sh {
+            match rng.range(0, 3) {
+                0 => f_hall(world, rng, ox, oy, sw, sh, top),
+                1 => f_pillars(world, rng, ox, oy, sw, sh, top),
+                _ => f_cavern(world, rng, ox, oy, sw, sh, top),
+            }
+        } else if rng.chance(1, 2) {
+            f_chamber(world, rng, ox, oy, sw, sh, top);
+        } else {
+            f_shaft(world, rng, ox, oy, sw, sh, top);
+        }
+    }
+
+    // --- 3. blend: a light domain-warp of the whole subsurface material field so the set-pieces'
+    // straight rectangular edges bend into the surrounding organic rock (and the soil/rock band
+    // boundaries wave). Small amplitude keeps rooms/ledges readable. Sky and crust top are untouched. ---
+    let blend_seed = rng.next();
+    let bamp = (u / 8).max(3) as f32;
+    let bscale = 1.0 / (u as f32 * 0.5);
+    let wu = world.width;
+    let snap = world.cells.clone();
+    for y in (top + bamp as i32)..h {
+        for x in 0..w {
+            let (xf, yf) = (x as f32 * bscale, y as f32 * bscale);
+            let dx = (fbm(xf, yf, blend_seed) - 0.5) * 2.0 * bamp;
+            let dy = (fbm(xf, yf, blend_seed ^ 0x85eb_ca6b) - 0.5) * 2.0 * bamp;
+            let sx = (x + dx as i32).clamp(0, w - 1) as usize;
+            let sy = (y + dy as i32).clamp(top, h - 1) as usize;
+            world.cells[y as usize * wu + x as usize] = snap[sy * wu + sx];
+        }
+    }
+
+    // --- 4. soil veins: scatter fertile Soil pockets through the deep rock (low-frequency noise ->
+    // cohesive blobs) so material isn't just a surface crust -- variety at all depths and substrate
+    // for deep colonies. Only INTERIOR rock (no open neighbour) is converted, so the powder soil is
+    // embedded and can't fall out of a cave wall; you dig/blast into it to expose it. ---
+    let soil_seed = rng.next();
+    let sfreq = 1.0 / 26.0;
+    for y in (top + 1)..(h - 1) {
+        for x in 1..(w - 1) {
+            if world.get(x as usize, y as usize) != Material::Rock {
+                continue;
+            }
+            if world.get((x - 1) as usize, y as usize) == Material::Empty
+                || world.get((x + 1) as usize, y as usize) == Material::Empty
+                || world.get(x as usize, (y - 1) as usize) == Material::Empty
+                || world.get(x as usize, (y + 1) as usize) == Material::Empty
+            {
+                continue; // skip cave-adjacent rock so the soil pocket stays put
+            }
+            if fbm(x as f32 * sfreq, y as f32 * sfreq, soil_seed) > 0.63 {
+                set(world, x as usize, y as usize, Material::Soil, rng);
+            }
+        }
+    }
+
+    // --- 5. surface mouth: a short opening from the open sky through the crust into the caves so the
+    // network connects to the surface (descent/flood starts from the sky). Carved after the blend. ---
+    let mx = rng.range(u, w - u);
+    dig(world, rng, mx - 3, (surface[mx as usize] - 2).max(0), mx + 3, top + u, 0);
 }
 
 /// BFS-flood Empty cells from the open sky (top row) using 4-connectivity. Returns whether the
@@ -586,6 +710,27 @@ pub fn generate(world: &mut World, seed: u32) {
     // branches off this guaranteed route. Nothing after this point writes Empty, so the descent
     // stays open.
     ensure_descendable(world, &mut rng);
+
+    // 4b. drop floating liquid the descent carve may have undercut: the shaft can carve out the
+    // ground beneath a just-placed pool, leaving a liquid cell resting on Empty (or on a powder floor
+    // that is itself now over Empty) -- both would fall on the first sim step. Remove that liquid at
+    // gen time so the generated world has no floating pools. Bottom-up, a few passes, so a removal
+    // that unsupports the liquid above it cascades.
+    let (gw, gh) = (world.width, world.height);
+    for _ in 0..4 {
+        for y in (0..gh - 2).rev() {
+            for x in 0..gw {
+                if world.get(x, y).is_liquid() {
+                    let b1 = world.get(x, y + 1);
+                    let unstable =
+                        b1 == Material::Empty || (b1.is_powder() && world.get(x, y + 2) == Material::Empty);
+                    if unstable {
+                        set(world, x, y, Material::Empty, &mut rng);
+                    }
+                }
+            }
+        }
+    }
 
     // 5. everything settles alive
     world.wake_all();

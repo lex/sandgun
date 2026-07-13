@@ -281,3 +281,4 @@ fn colonies_are_seeded_on_soil() {
     assert!(w.colony_count() > 0, "worldgen should seed colonies");
 }
 
+
