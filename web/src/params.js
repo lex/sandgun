@@ -18,7 +18,9 @@ const INDEX = {
 
 export async function loadParams(world) {
   try {
-    const res = await fetch(`/params.json?t=${Date.now()}`); // bust cache on reload
+    // BASE_URL is "/" in dev and "/sandgun/" on GitHub Pages — keeps the fetch
+    // working under the Pages subpath. The cache-bust query lets live reload work.
+    const res = await fetch(`${import.meta.env.BASE_URL}params.json?t=${Date.now()}`);
     const json = await res.json();
     let applied = 0;
     for (const [name, value] of Object.entries(json)) {
